@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 
@@ -60,6 +60,8 @@ function ClickToAddObstacle(props: {
 }
 
 export default function MapComponent() {
+  const mapRef = useRef<L.Map | null>(null);
+
   const [pos, setPos] = useState<[number, number] | null>(null);
   const [obstacles, setObstacles] = useState<Obstacle[]>([]);
   const [draft, setDraft] = useState<{
@@ -71,7 +73,8 @@ export default function MapComponent() {
 
   const [reportMode, setReportMode] = useState(false);
 
-  const fallback: [number, number] = [48.8566, 2.3522];
+  const fallback: [number, number] = [48.8566, 2.3522]; // Paris
+  const center = pos ?? fallback;
 
   useEffect(() => {
     setObstacles(loadObstacles());
@@ -85,8 +88,6 @@ export default function MapComponent() {
       { enableHighAccuracy: true, timeout: 8000 }
     );
   }, []);
-
-  const center = pos ?? fallback;
 
   const typeOptions: ObstacleType[] = useMemo(
     () => ["Escaliers", "Ascenseur en panne", "Trottoir dégradé", "Pente trop forte", "Autre"],
@@ -128,9 +129,30 @@ export default function MapComponent() {
     saveObstacles(next);
   }
 
+  function recenterToMyPosition() {
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (!navigator.geolocation) {
+      map.setView(fallback, 16, { animate: true });
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (p) => {
+        const me: [number, number] = [p.coords.latitude, p.coords.longitude];
+        setPos(me);
+        map.setView(me, 17, { animate: true });
+      },
+      () => {
+        map.setView(center, 16, { animate: true });
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  }
+
   return (
     <div className="map-wrap">
-      {/* Panneau UI */}
       <div className="ui-panel">
         <div className="ui-title">HandiWay — Signalement</div>
 
@@ -148,19 +170,20 @@ export default function MapComponent() {
             {reportMode ? "Annuler" : "Signaler"}
           </button>
 
-          <button
-            className="btn ghost"
-            onClick={() => {
-              // recentrer sur la position
-              setPos((p) => p ?? fallback);
-            }}
-          >
+          <button className="btn ghost" onClick={recenterToMyPosition}>
             Ma position
           </button>
         </div>
       </div>
 
-      <MapContainer center={center} zoom={16} className="map">
+      <MapContainer
+        center={center}
+        zoom={16}
+        className="map"
+        ref={(ref) => {
+          mapRef.current = ref;
+        }}
+      >
         <ClickToAddObstacle enabled={reportMode} onPick={openDraft} />
 
         <TileLayer
@@ -206,7 +229,6 @@ export default function MapComponent() {
         ))}
       </MapContainer>
 
-      {/* Modal */}
       {draft && (
         <div className="modal-backdrop" onMouseDown={cancelDraft}>
           <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
