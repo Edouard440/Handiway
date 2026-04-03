@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents, ZoomControl } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 
 type ObstacleType =
@@ -59,11 +59,25 @@ function ClickToAddObstacle(props: {
   return null;
 }
 
-export default function MapComponent() {
+function ZoomControl() {
+  const map = useMap();
+
+  useEffect(() => {
+    const zoomControl = new L.Control.Zoom({ position: "topright" });
+    map.addControl(zoomControl);
+    return () => {
+      map.removeControl(zoomControl);
+    };
+  }, [map]);
+
+  return null;
+}
+
+export default function MapComponent({ selectedAid }: { selectedAid: string | null }) {
   const mapRef = useRef<L.Map | null>(null);
 
   const [pos, setPos] = useState<[number, number] | null>(null);
-  const [obstacles, setObstacles] = useState<Obstacle[]>(() => loadObstacles());
+  const [obstacles, setObstacles] = useState<Obstacle[]>([]);
   const [draft, setDraft] = useState<{
     lat: number;
     lng: number;
@@ -73,8 +87,12 @@ export default function MapComponent() {
 
   const [reportMode, setReportMode] = useState(false);
 
-  const fallback = useMemo(() => [48.8566, 2.3522] as [number, number], []);
+  const fallback: [number, number] = [48.8566, 2.3522]; // Paris
   const center = pos ?? fallback;
+
+  useEffect(() => {
+    setObstacles(loadObstacles());
+  }, []);
 
   useEffect(() => {
     if (!navigator.geolocation) return;
@@ -83,7 +101,7 @@ export default function MapComponent() {
       () => setPos(fallback),
       { enableHighAccuracy: true, timeout: 8000 }
     );
-  }, [fallback]);
+  }, []);
 
   const typeOptions: ObstacleType[] = useMemo(
     () => ["Escaliers", "Ascenseur en panne", "Trottoir dégradé", "Pente trop forte", "Autre"],
@@ -175,14 +193,13 @@ export default function MapComponent() {
       <MapContainer
         center={center}
         zoom={16}
-        className="map"
         zoomControl={false}
+        className="map"
         ref={(ref) => {
           mapRef.current = ref;
         }}
       >
-        <ZoomControl position="topright" />
-
+        <ZoomControl />
         <ClickToAddObstacle enabled={reportMode} onPick={openDraft} />
 
         <TileLayer
