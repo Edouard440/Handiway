@@ -1,7 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents, ZoomControl } from "react-leaflet";
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Popup,
+  useMapEvents,
+  ZoomControl,
+} from "react-leaflet";
 import L from "leaflet";
 
 type MobilityAid =
@@ -199,7 +206,6 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
       <div className="ui-panel">
         <div className="ui-title">HandiWay</div>
 
-        {/* ✅ Affiche l’aide choisie (debug) */}
         <div className="ui-sub" style={{ marginTop: 6 }}>
           Aide : {selectedAid ?? "non définie"}
         </div>
@@ -315,7 +321,6 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
-        {/* Destination */}
         {dest && (
           <Marker position={[dest.lat, dest.lng]} icon={DefaultIcon}>
             <Popup>
