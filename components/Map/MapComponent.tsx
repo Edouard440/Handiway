@@ -6,6 +6,7 @@ import {
   TileLayer,
   Marker,
   Popup,
+  Polyline,
   useMapEvents,
   ZoomControl,
 } from "react-leaflet";
@@ -92,6 +93,23 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
 
   const [reportMode, setReportMode] = useState(false);
 
+  // Routing
+  const [route, setRoute] = useState<{
+    coords: [number, number][];
+    distance: number;
+    duration: number;
+    steps: {
+      instruction: string;
+      distance: number;
+      duration: number;
+      location: [number, number];
+    }[];
+  } | null>(null);
+  const [navigationActive, setNavigationActive] = useState(false);
+  const [currentStepIndex, setCurrentStepIndex] = useState(0);
+  const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
+  const [routeError, setRouteError] = useState<string | null>(null);
+
   // Destination (adresse)
   const [addressInput, setAddressInput] = useState("");
   const [pendingAddress, setPendingAddress] = useState<string | null>(null);
@@ -163,6 +181,7 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
       (p) => {
         const me: [number, number] = [p.coords.latitude, p.coords.longitude];
         setPos(me);
+        setUserLocation(me);
         map.setView(me, 17, { animate: true });
       },
       () => {
@@ -171,6 +190,122 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
       { enableHighAccuracy: true, timeout: 8000 }
     );
   }
+
+  const metersBetween = ([lat1, lon1]: [number, number], [lat2, lon2]: [number, number]) => {
+    const R = 6371000;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLon = ((lon2 - lon1) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((lat1 * Math.PI) / 180) *
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
+  const buildInstructions = (steps: any[]) =>
+    steps.map((step) => ({
+      instruction: step.maneuver.instruction || step.name || "Continue",
+      distance: step.distance || 0,
+      duration: step.duration || 0,
+      location: [step.maneuver.location[1], step.maneuver.location[0]] as [number, number],
+    }));
+
+  async function fetchRoute() {
+    setRouteError(null);
+
+    if (!pos || !dest) {
+      setRouteError("Position ou destination manquante");
+      return;
+    }
+
+    const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+    if (!token) {
+      setRouteError("MAPBOX TOKEN manquant. Ajouter NEXT_PUBLIC_MAPBOX_TOKEN dans .env.local");
+      return;
+    }
+
+    const profile =
+      selectedAid === "walker" || selectedAid === "cane" || selectedAid === "crutches"
+        ? "walking"
+        : selectedAid === "scooter"
+        ? "driving-traffic"
+        : selectedAid === "wheelchair" || selectedAid === "prosthetic"
+        ? "driving"
+        : "driving-traffic";
+
+    const url = `https://api.mapbox.com/directions/v5/mapbox/${profile}/${pos[1]},${pos[0]};${dest.lng},${dest.lat}?geometries=geojson&steps=true&overview=full&annotations=distance,duration,congestion&access_token=${token}`;
+
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Mapbox route fail ${res.status}`);
+      const json = await res.json();
+      const routeData = json.routes?.[0];
+      if (!routeData) {
+        setRouteError("Aucune route trouvée");
+        return;
+      }
+
+      const coords = (routeData.geometry.coordinates as [number, number][]).map((c) => [c[1], c[0]] as [number, number]);
+      const steps = routeData.legs?.[0]?.steps ? buildInstructions(routeData.legs[0].steps) : [];
+
+      setRoute({
+        coords,
+        distance: routeData.distance || 0,
+        duration: routeData.duration || 0,
+        steps,
+      });
+      setCurrentStepIndex(0);
+      setNavigationActive(true);
+
+      const map = mapRef.current;
+      if (map) {
+        const bounds = L.latLngBounds(coords as [number, number][]);
+        map.fitBounds(bounds, { padding: [50, 50] });
+      }
+    } catch (error) {
+      console.error(error);
+      setRouteError("Impossible de charger l'itinéraire");
+    }
+  }
+
+  useEffect(() => {
+    if (!navigationActive || !navigator.geolocation) return;
+
+    const id = navigator.geolocation.watchPosition(
+      (p) => {
+        const me: [number, number] = [p.coords.latitude, p.coords.longitude];
+        setPos(me);
+        setUserLocation(me);
+
+        const map = mapRef.current;
+        if (map) map.panTo(me, { animate: true });
+
+        if (!route) return;
+
+        const nextStep = route.steps[currentStepIndex];
+        if (nextStep) {
+          const dist = metersBetween(me, nextStep.location);
+          if (dist < 20) {
+            setCurrentStepIndex((i) => Math.min(i + 1, route.steps.length - 1));
+          }
+        }
+
+        const distToRoute = route.coords.reduce((min, p) => Math.min(min, metersBetween(me, p)), Infinity);
+        if (distToRoute > 35) {
+          fetchRoute();
+        }
+      },
+      (err) => {
+        console.warn(err);
+      },
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 8000 }
+    );
+
+    return () => navigator.geolocation.clearWatch(id);
+  }, [navigationActive, route, currentStepIndex]);
 
   async function confirmAddress() {
     const q = (pendingAddress ?? "").trim();
@@ -256,7 +391,7 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
           )}
 
           {dest && (
-            <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+            <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button
                 className="btn ghost"
                 onClick={() => {
@@ -278,7 +413,49 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
               >
                 Effacer
               </button>
+
+              <button className="btn" onClick={fetchRoute}>
+                Calculer itinéraire
+              </button>
+
+              {navigationActive ? (
+                <button className="btn ghost" onClick={() => setNavigationActive(false)}>
+                  Arrêter navigation
+                </button>
+              ) : (
+                <button
+                  className="btn"
+                  onClick={() => {
+                    if (!route) {
+                      fetchRoute();
+                      return;
+                    }
+                    setNavigationActive(true);
+                  }}
+                >
+                  Démarrer navigation
+                </button>
+              )}
             </div>
+          )}
+
+          {routeError && (
+            <div className="ui-sub" style={{ marginTop: 8, color: "#ff7b7b" }}>
+              {routeError}
+            </div>
+          )}
+
+          {route && (
+            <>
+              <div className="ui-sub" style={{ marginTop: 8 }}>
+                Itinéraire : {(route.distance / 1000).toFixed(1)} km • {(route.duration / 60).toFixed(0)} min
+              </div>
+              {route.steps.length > 0 && (
+                <div className="ui-sub" style={{ marginTop: 4 }}>
+                  Prochaine étape : {route.steps[currentStepIndex]?.instruction ?? "..."}
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -321,6 +498,13 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
+        {route && route.coords.length > 0 && (
+          <Polyline
+            positions={route.coords}
+            pathOptions={{ color: "#76c7ff", weight: 7, opacity: 0.85 }}
+          />
+        )}
+
         {dest && (
           <Marker position={[dest.lat, dest.lng]} icon={DefaultIcon}>
             <Popup>
@@ -332,9 +516,11 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
           </Marker>
         )}
 
-        <Marker position={center} icon={DefaultIcon}>
-          <Popup>Ta position</Popup>
-        </Marker>
+        {(userLocation ?? center) && (
+          <Marker position={userLocation ?? center} icon={DefaultIcon}>
+            <Popup>Vous</Popup>
+          </Marker>
+        )}
 
         {obstacles.map((o) => (
           <Marker key={o.id} position={[o.lat, o.lng]} icon={DefaultIcon}>
