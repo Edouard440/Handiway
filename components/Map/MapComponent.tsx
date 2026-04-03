@@ -1,8 +1,20 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, useMapEvents, ZoomControl } from "react-leaflet";
 import L from "leaflet";
+
+type MobilityAid =
+  | "wheelchair"
+  | "scooter"
+  | "walker"
+  | "cane"
+  | "crutches"
+  | "prosthetic";
+
+type MapComponentProps = {
+  selectedAid: MobilityAid | null;
+};
 
 type ObstacleType =
   | "Escaliers"
@@ -59,25 +71,11 @@ function ClickToAddObstacle(props: {
   return null;
 }
 
-function ZoomControl() {
-  const map = useMap();
-
-  useEffect(() => {
-    const zoomControl = new L.Control.Zoom({ position: "topright" });
-    map.addControl(zoomControl);
-    return () => {
-      map.removeControl(zoomControl);
-    };
-  }, [map]);
-
-  return null;
-}
-
-export default function MapComponent({ selectedAid }: { selectedAid: string | null }) {
+export default function MapComponent({ selectedAid }: MapComponentProps) {
   const mapRef = useRef<L.Map | null>(null);
 
   const [pos, setPos] = useState<[number, number] | null>(null);
-  const [obstacles, setObstacles] = useState<Obstacle[]>([]);
+  const [obstacles, setObstacles] = useState<Obstacle[]>(() => loadObstacles());
   const [draft, setDraft] = useState<{
     lat: number;
     lng: number;
@@ -87,12 +85,14 @@ export default function MapComponent({ selectedAid }: { selectedAid: string | nu
 
   const [reportMode, setReportMode] = useState(false);
 
-  const fallback: [number, number] = [48.8566, 2.3522]; // Paris
-  const center = pos ?? fallback;
+  // Destination (adresse)
+  const [addressInput, setAddressInput] = useState("");
+  const [pendingAddress, setPendingAddress] = useState<string | null>(null);
+  const [dest, setDest] = useState<{ lat: number; lng: number; label: string } | null>(null);
+  const [geoStatus, setGeoStatus] = useState<"idle" | "loading" | "notfound" | "error">("idle");
 
-  useEffect(() => {
-    setObstacles(loadObstacles());
-  }, []);
+  const fallback = useMemo(() => [48.8566, 2.3522] as [number, number], []);
+  const center = pos ?? fallback;
 
   useEffect(() => {
     if (!navigator.geolocation) return;
@@ -101,7 +101,7 @@ export default function MapComponent({ selectedAid }: { selectedAid: string | nu
       () => setPos(fallback),
       { enableHighAccuracy: true, timeout: 8000 }
     );
-  }, []);
+  }, [fallback]);
 
   const typeOptions: ObstacleType[] = useMemo(
     () => ["Escaliers", "Ascenseur en panne", "Trottoir dégradé", "Pente trop forte", "Autre"],
@@ -165,12 +165,119 @@ export default function MapComponent({ selectedAid }: { selectedAid: string | nu
     );
   }
 
+  async function confirmAddress() {
+    const q = (pendingAddress ?? "").trim();
+    if (!q) return;
+
+    const map = mapRef.current;
+    setGeoStatus("loading");
+
+    try {
+      const res = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+
+      if (!data?.found) {
+        setGeoStatus("notfound");
+        return;
+      }
+
+      const lat = Number(data.lat);
+      const lng = Number(data.lon);
+      const label = String(data.display_name ?? q);
+
+      setDest({ lat, lng, label });
+      setGeoStatus("idle");
+
+      if (map) map.setView([lat, lng], 16, { animate: true });
+    } catch {
+      setGeoStatus("error");
+    }
+  }
+
   return (
     <div className="map-wrap">
       <div className="ui-panel">
-        <div className="ui-title">HandiWay — Signalement</div>
+        <div className="ui-title">HandiWay</div>
 
-        <div className="ui-sub" style={{ marginBottom: 10 }}>
+        {/* ✅ Affiche l’aide choisie (debug) */}
+        <div className="ui-sub" style={{ marginTop: 6 }}>
+          Aide : {selectedAid ?? "non définie"}
+        </div>
+
+        {/* Adresse */}
+        <div style={{ marginTop: 10 }}>
+          <div className="ui-sub" style={{ marginBottom: 6 }}>
+            Adresse / destination
+          </div>
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              value={addressInput}
+              onChange={(e) => {
+                const v = e.target.value;
+                setAddressInput(v);
+                setPendingAddress(v.trim() ? v : null);
+                setGeoStatus("idle");
+              }}
+              placeholder="Ex: 10 rue de Rivoli, Paris"
+              style={{
+                flex: 1,
+                padding: "8px 10px",
+                borderRadius: 12,
+                border: "1px solid rgba(255,255,255,0.18)",
+                background: "rgba(0,0,0,0.35)",
+                color: "white",
+                outline: "none",
+              }}
+            />
+
+            {pendingAddress && (
+              <button className="btn" onClick={confirmAddress} disabled={geoStatus === "loading"}>
+                {geoStatus === "loading" ? "..." : "Confirmer"}
+              </button>
+            )}
+          </div>
+
+          {geoStatus === "notfound" && (
+            <div className="ui-sub" style={{ marginTop: 6 }}>
+              Adresse introuvable.
+            </div>
+          )}
+          {geoStatus === "error" && (
+            <div className="ui-sub" style={{ marginTop: 6 }}>
+              Erreur de recherche.
+            </div>
+          )}
+
+          {dest && (
+            <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+              <button
+                className="btn ghost"
+                onClick={() => {
+                  const map = mapRef.current;
+                  if (map) map.setView([dest.lat, dest.lng], 16, { animate: true });
+                }}
+              >
+                Aller à la destination
+              </button>
+
+              <button
+                className="btn ghost"
+                onClick={() => {
+                  setDest(null);
+                  setAddressInput("");
+                  setPendingAddress(null);
+                  setGeoStatus("idle");
+                }}
+              >
+                Effacer
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Signalement */}
+        <div className="ui-sub" style={{ marginTop: 12, marginBottom: 10 }}>
           {reportMode
             ? "Mode signalement activé : clique sur la carte."
             : "Clique sur “Signaler” pour ajouter un obstacle."}
@@ -193,19 +300,32 @@ export default function MapComponent({ selectedAid }: { selectedAid: string | nu
       <MapContainer
         center={center}
         zoom={16}
-        zoomControl={false}
         className="map"
+        zoomControl={false}
         ref={(ref) => {
           mapRef.current = ref;
         }}
       >
-        <ZoomControl />
+        <ZoomControl position="topright" />
+
         <ClickToAddObstacle enabled={reportMode} onPick={openDraft} />
 
         <TileLayer
           attribution="&copy; OpenStreetMap contributors"
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
+
+        {/* Destination */}
+        {dest && (
+          <Marker position={[dest.lat, dest.lng]} icon={DefaultIcon}>
+            <Popup>
+              <div style={{ minWidth: 220 }}>
+                <div style={{ fontWeight: 700 }}>Destination</div>
+                <div style={{ marginTop: 6 }}>{dest.label}</div>
+              </div>
+            </Popup>
+          </Marker>
+        )}
 
         <Marker position={center} icon={DefaultIcon}>
           <Popup>Ta position</Popup>
