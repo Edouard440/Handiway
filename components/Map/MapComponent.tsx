@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 
 type ObstacleType =
@@ -56,6 +56,20 @@ function ClickToAddObstacle(props: {
       props.onPick(e.latlng.lat, e.latlng.lng);
     },
   });
+  return null;
+}
+
+function ZoomControl() {
+  const map = useMap();
+
+  useEffect(() => {
+    const zoomControl = new L.Control.Zoom({ position: "topright" });
+    map.addControl(zoomControl);
+    return () => {
+      map.removeControl(zoomControl);
+    };
+  }, [map]);
+
   return null;
 }
 
@@ -179,11 +193,13 @@ export default function MapComponent() {
       <MapContainer
         center={center}
         zoom={16}
+        zoomControl={false}
         className="map"
         ref={(ref) => {
           mapRef.current = ref;
         }}
       >
+        <ZoomControl />
         <ClickToAddObstacle enabled={reportMode} onPick={openDraft} />
 
         <TileLayer
