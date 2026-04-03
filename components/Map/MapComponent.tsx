@@ -73,7 +73,7 @@ function ZoomControl() {
   return null;
 }
 
-export default function MapComponent() {
+export default function MapComponent({ selectedAid }: { selectedAid: string | null }) {
   const mapRef = useRef<L.Map | null>(null);
 
   const [pos, setPos] = useState<[number, number] | null>(null);
