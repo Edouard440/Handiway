@@ -1,24 +1,17 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import L from "leaflet";
 import {
   MapContainer,
-  TileLayer,
   Marker,
-  Popup,
   Polyline,
+  Popup,
+  TileLayer,
   useMapEvents,
   ZoomControl,
 } from "react-leaflet";
-import L from "leaflet";
-
-type MobilityAid =
-  | "wheelchair"
-  | "scooter"
-  | "walker"
-  | "cane"
-  | "crutches"
-  | "prosthetic";
+import type { MobilityAid } from "@/app/page";
 
 type MapComponentProps = {
   selectedAid: MobilityAid | null;
@@ -29,6 +22,7 @@ type ObstacleType =
   | "Ascenseur en panne"
   | "Trottoir dégradé"
   | "Pente trop forte"
+  | "Passage trop étroit"
   | "Autre";
 
 type Obstacle = {
@@ -40,23 +34,85 @@ type Obstacle = {
   createdAt: string;
 };
 
-const DefaultIcon = L.icon({
-  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-  iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-});
+type RouteStep = {
+  instruction: string;
+  distance: number;
+  duration: number;
+  location: [number, number];
+};
+
+type RouteState = {
+  coords: [number, number][];
+  distance: number;
+  duration: number;
+  steps: RouteStep[];
+};
+
+type DraftObstacle = {
+  lat: number;
+  lng: number;
+  type: ObstacleType;
+  description: string;
+};
 
 const STORAGE_KEY = "handiway_obstacles_v1";
+const DEFAULT_CENTER: [number, number] = [48.8566, 2.3522];
+
+const obstacleTypes: ObstacleType[] = [
+  "Escaliers",
+  "Ascenseur en panne",
+  "Trottoir dégradé",
+  "Pente trop forte",
+  "Passage trop étroit",
+  "Autre",
+];
+
+const aidLabels: Record<MobilityAid, string> = {
+  wheelchair: "Fauteuil roulant",
+  scooter: "Scooter électrique",
+  walker: "Déambulateur",
+  cane: "Canne",
+  crutches: "Béquilles",
+  prosthetic: "Prothèse",
+};
+
+const destinationIcon = L.divIcon({
+  className: "destination-marker",
+  html: '<span aria-hidden="true"></span>',
+  iconSize: [28, 28],
+  iconAnchor: [14, 28],
+});
+
+const userIcon = L.divIcon({
+  className: "user-marker",
+  html: '<span aria-hidden="true"></span>',
+  iconSize: [24, 24],
+  iconAnchor: [12, 12],
+});
+
+const obstacleIcon = L.divIcon({
+  className: "obstacle-marker",
+  html: '<span aria-hidden="true">!</span>',
+  iconSize: [28, 28],
+  iconAnchor: [14, 14],
+});
 
 function loadObstacles(): Obstacle[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw) as Partial<Obstacle>[];
     if (!Array.isArray(parsed)) return [];
-    return parsed as Obstacle[];
+
+    return parsed.filter(
+      (item): item is Obstacle =>
+        typeof item.id === "string" &&
+        typeof item.type === "string" &&
+        typeof item.description === "string" &&
+        typeof item.lat === "number" &&
+        typeof item.lng === "number" &&
+        typeof item.createdAt === "string"
+    );
   } catch {
     return [];
   }
@@ -66,72 +122,125 @@ function saveObstacles(obstacles: Obstacle[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(obstacles));
 }
 
-function ClickToAddObstacle(props: {
+function ClickToAddObstacle({
+  enabled,
+  onPick,
+}: {
   enabled: boolean;
   onPick: (lat: number, lng: number) => void;
 }) {
   useMapEvents({
-    click(e) {
-      if (!props.enabled) return;
-      props.onPick(e.latlng.lat, e.latlng.lng);
+    click(event) {
+      if (enabled) onPick(event.latlng.lat, event.latlng.lng);
     },
   });
+
   return null;
+}
+
+function metersBetween([lat1, lon1]: [number, number], [lat2, lon2]: [number, number]) {
+  const radius = 6371000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+
+  return radius * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+}
+
+function formatDistance(meters: number) {
+  if (meters < 1000) return `${Math.round(meters)} m`;
+  return `${(meters / 1000).toFixed(1)} km`;
+}
+
+function formatDuration(seconds: number) {
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+
+function profileForAid(aid: MobilityAid | null) {
+  if (aid === "scooter") return "driving";
+  return "foot";
+}
+
+function isRouteState(value: RouteState | { error?: string }): value is RouteState {
+  return (
+    "coords" in value &&
+    Array.isArray(value.coords) &&
+    typeof value.distance === "number" &&
+    typeof value.duration === "number" &&
+    Array.isArray(value.steps)
+  );
 }
 
 export default function MapComponent({ selectedAid }: MapComponentProps) {
   const mapRef = useRef<L.Map | null>(null);
-
-  const [pos, setPos] = useState<[number, number] | null>(null);
+  const [position, setPosition] = useState<[number, number] | null>(null);
   const [obstacles, setObstacles] = useState<Obstacle[]>(() => loadObstacles());
-  const [draft, setDraft] = useState<{
-    lat: number;
-    lng: number;
-    type: ObstacleType;
-    description: string;
-  } | null>(null);
-
+  const [draft, setDraft] = useState<DraftObstacle | null>(null);
   const [reportMode, setReportMode] = useState(false);
-
-  // Routing
-  const [route, setRoute] = useState<{
-    coords: [number, number][];
-    distance: number;
-    duration: number;
-    steps: {
-      instruction: string;
-      distance: number;
-      duration: number;
-      location: [number, number];
-    }[];
-  } | null>(null);
+  const [route, setRoute] = useState<RouteState | null>(null);
   const [navigationActive, setNavigationActive] = useState(false);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
-  const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
+  const [destination, setDestination] = useState<{ lat: number; lng: number; label: string } | null>(
+    null
+  );
+  const [addressInput, setAddressInput] = useState("");
+  const [geoStatus, setGeoStatus] = useState<"idle" | "loading" | "notfound" | "error">("idle");
+  const [routeStatus, setRouteStatus] = useState<"idle" | "loading" | "error">("idle");
   const [routeError, setRouteError] = useState<string | null>(null);
 
-  // Destination (adresse)
-  const [addressInput, setAddressInput] = useState("");
-  const [pendingAddress, setPendingAddress] = useState<string | null>(null);
-  const [dest, setDest] = useState<{ lat: number; lng: number; label: string } | null>(null);
-  const [geoStatus, setGeoStatus] = useState<"idle" | "loading" | "notfound" | "error">("idle");
+  const center = position ?? DEFAULT_CENTER;
+  const selectedAidLabel = selectedAid ? aidLabels[selectedAid] : "non défini";
+  const nextStep = route?.steps[currentStepIndex];
 
-  const fallback = useMemo(() => [48.8566, 2.3522] as [number, number], []);
-  const center = pos ?? fallback;
+  const nearbyObstacles = useMemo(() => {
+    if (!route) return [];
+    return obstacles.filter((obstacle) =>
+      route.coords.some((coord) => metersBetween(coord, [obstacle.lat, obstacle.lng]) < 45)
+    );
+  }, [obstacles, route]);
 
   useEffect(() => {
-    if (!navigator.geolocation) return;
+    if (!navigator.geolocation) {
+      setPosition(DEFAULT_CENTER);
+      return;
+    }
+
     navigator.geolocation.getCurrentPosition(
-      (p) => setPos([p.coords.latitude, p.coords.longitude]),
-      () => setPos(fallback),
+      (pos) => setPosition([pos.coords.latitude, pos.coords.longitude]),
+      () => setPosition(DEFAULT_CENTER),
       { enableHighAccuracy: true, timeout: 8000 }
     );
-  }, [fallback]);
+  }, []);
 
-  const typeOptions: ObstacleType[] = useMemo(
-    () => ["Escaliers", "Ascenseur en panne", "Trottoir dégradé", "Pente trop forte", "Autre"],
-    []
-  );
+  useEffect(() => {
+    if (!navigationActive || !navigator.geolocation) return;
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const nextPosition: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+        setPosition(nextPosition);
+        mapRef.current?.panTo(nextPosition, { animate: true });
+
+        if (!route) return;
+
+        const step = route.steps[currentStepIndex];
+        if (step && metersBetween(nextPosition, step.location) < 20) {
+          setCurrentStepIndex((index) => Math.min(index + 1, route.steps.length - 1));
+        }
+      },
+      () => undefined,
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 8000 }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [currentStepIndex, navigationActive, route]);
 
   function openDraft(lat: number, lng: number) {
     setDraft({ lat, lng, type: "Trottoir dégradé", description: "" });
@@ -145,8 +254,8 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
   function submitDraft() {
     if (!draft) return;
 
-    const newObstacle: Obstacle = {
-      id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+    const obstacle: Obstacle = {
+      id: globalThis.crypto?.randomUUID?.() ?? String(Date.now()),
       type: draft.type,
       description: draft.description.trim(),
       lat: draft.lat,
@@ -154,343 +263,221 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
       createdAt: new Date().toISOString(),
     };
 
-    const next = [newObstacle, ...obstacles];
+    const next = [obstacle, ...obstacles];
     setObstacles(next);
     saveObstacles(next);
-
     setDraft(null);
     setReportMode(false);
   }
 
   function removeObstacle(id: string) {
-    const next = obstacles.filter((o) => o.id !== id);
+    const next = obstacles.filter((obstacle) => obstacle.id !== id);
     setObstacles(next);
     saveObstacles(next);
   }
 
   function recenterToMyPosition() {
-    const map = mapRef.current;
-    if (!map) return;
-
     if (!navigator.geolocation) {
-      map.setView(fallback, 16, { animate: true });
+      mapRef.current?.setView(DEFAULT_CENTER, 16, { animate: true });
       return;
     }
 
     navigator.geolocation.getCurrentPosition(
-      (p) => {
-        const me: [number, number] = [p.coords.latitude, p.coords.longitude];
-        setPos(me);
-        setUserLocation(me);
-        map.setView(me, 17, { animate: true });
+      (pos) => {
+        const nextPosition: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+        setPosition(nextPosition);
+        mapRef.current?.setView(nextPosition, 17, { animate: true });
       },
-      () => {
-        map.setView(center, 16, { animate: true });
-      },
+      () => mapRef.current?.setView(center, 16, { animate: true }),
       { enableHighAccuracy: true, timeout: 8000 }
     );
   }
 
-  const metersBetween = ([lat1, lon1]: [number, number], [lat2, lon2]: [number, number]) => {
-    const R = 6371000;
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLon = ((lon2 - lon1) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  };
+  async function confirmAddress() {
+    const query = addressInput.trim();
+    if (!query) return;
 
-  const buildInstructions = (steps: any[]) =>
-    steps.map((step) => ({
-      instruction: step.maneuver.instruction || step.name || "Continue",
-      distance: step.distance || 0,
-      duration: step.duration || 0,
-      location: [step.maneuver.location[1], step.maneuver.location[0]] as [number, number],
-    }));
-
-  async function fetchRoute() {
+    setGeoStatus("loading");
     setRouteError(null);
 
-    if (!pos || !dest) {
-      setRouteError("Position ou destination manquante");
-      return;
-    }
-
-    const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
-    if (!token) {
-      setRouteError("MAPBOX TOKEN manquant. Ajouter NEXT_PUBLIC_MAPBOX_TOKEN dans .env.local");
-      return;
-    }
-
-    const profile =
-      selectedAid === "walker" || selectedAid === "cane" || selectedAid === "crutches"
-        ? "walking"
-        : selectedAid === "scooter"
-        ? "driving-traffic"
-        : selectedAid === "wheelchair" || selectedAid === "prosthetic"
-        ? "driving"
-        : "driving-traffic";
-
-    const url = `https://api.mapbox.com/directions/v5/mapbox/${profile}/${pos[1]},${pos[0]};${dest.lng},${dest.lat}?geometries=geojson&steps=true&overview=full&annotations=distance,duration,congestion&access_token=${token}`;
-
     try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`Mapbox route fail ${res.status}`);
-      const json = await res.json();
-      const routeData = json.routes?.[0];
-      if (!routeData) {
-        setRouteError("Aucune route trouvée");
-        return;
-      }
+      const response = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`);
+      const data = (await response.json()) as {
+        found?: boolean;
+        lat?: number;
+        lon?: number;
+        display_name?: string;
+      };
 
-      const coords = (routeData.geometry.coordinates as [number, number][]).map((c) => [c[1], c[0]] as [number, number]);
-      const steps = routeData.legs?.[0]?.steps ? buildInstructions(routeData.legs[0].steps) : [];
-
-      setRoute({
-        coords,
-        distance: routeData.distance || 0,
-        duration: routeData.duration || 0,
-        steps,
-      });
-      setCurrentStepIndex(0);
-      setNavigationActive(true);
-
-      const map = mapRef.current;
-      if (map) {
-        const bounds = L.latLngBounds(coords as [number, number][]);
-        map.fitBounds(bounds, { padding: [50, 50] });
-      }
-    } catch (error) {
-      console.error(error);
-      setRouteError("Impossible de charger l'itinéraire");
-    }
-  }
-
-  useEffect(() => {
-    if (!navigationActive || !navigator.geolocation) return;
-
-    const id = navigator.geolocation.watchPosition(
-      (p) => {
-        const me: [number, number] = [p.coords.latitude, p.coords.longitude];
-        setPos(me);
-        setUserLocation(me);
-
-        const map = mapRef.current;
-        if (map) map.panTo(me, { animate: true });
-
-        if (!route) return;
-
-        const nextStep = route.steps[currentStepIndex];
-        if (nextStep) {
-          const dist = metersBetween(me, nextStep.location);
-          if (dist < 20) {
-            setCurrentStepIndex((i) => Math.min(i + 1, route.steps.length - 1));
-          }
-        }
-
-        const distToRoute = route.coords.reduce((min, p) => Math.min(min, metersBetween(me, p)), Infinity);
-        if (distToRoute > 35) {
-          fetchRoute();
-        }
-      },
-      (err) => {
-        console.warn(err);
-      },
-      { enableHighAccuracy: true, maximumAge: 1000, timeout: 8000 }
-    );
-
-    return () => navigator.geolocation.clearWatch(id);
-  }, [navigationActive, route, currentStepIndex]);
-
-  async function confirmAddress() {
-    const q = (pendingAddress ?? "").trim();
-    if (!q) return;
-
-    const map = mapRef.current;
-    setGeoStatus("loading");
-
-    try {
-      const res = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`);
-      const data = await res.json();
-
-      if (!data?.found) {
+      if (!response.ok || !data.found || typeof data.lat !== "number" || typeof data.lon !== "number") {
         setGeoStatus("notfound");
         return;
       }
 
-      const lat = Number(data.lat);
-      const lng = Number(data.lon);
-      const label = String(data.display_name ?? q);
-
-      setDest({ lat, lng, label });
+      setDestination({
+        lat: data.lat,
+        lng: data.lon,
+        label: data.display_name ?? query,
+      });
+      setRoute(null);
+      setCurrentStepIndex(0);
+      setNavigationActive(false);
       setGeoStatus("idle");
-
-      if (map) map.setView([lat, lng], 16, { animate: true });
+      mapRef.current?.setView([data.lat, data.lon], 16, { animate: true });
     } catch {
       setGeoStatus("error");
     }
   }
 
-  return (
-    <div className="map-wrap">
-      <div className="ui-panel">
-        <div className="ui-title">HandiWay</div>
+  async function fetchRoute() {
+    if (!position || !destination) {
+      setRouteError("Position ou destination manquante.");
+      return;
+    }
 
-        <div className="ui-sub" style={{ marginTop: 6 }}>
-          Aide : {selectedAid ?? "non définie"}
+    setRouteStatus("loading");
+    setRouteError(null);
+
+    const params = new URLSearchParams({
+      fromLat: String(position[0]),
+      fromLng: String(position[1]),
+      toLat: String(destination.lat),
+      toLng: String(destination.lng),
+      profile: profileForAid(selectedAid),
+    });
+
+    try {
+      const response = await fetch(`/api/route?${params.toString()}`);
+      const data = (await response.json()) as RouteState | { error?: string };
+
+      if (!response.ok || !isRouteState(data)) {
+        throw new Error("error" in data ? data.error : "Route failed");
+      }
+
+      setRoute(data);
+      setCurrentStepIndex(0);
+      setNavigationActive(true);
+
+      if (data.coords.length > 0) {
+        mapRef.current?.fitBounds(L.latLngBounds(data.coords), { padding: [64, 64] });
+      }
+      setRouteStatus("idle");
+    } catch {
+      setRouteStatus("error");
+      setRouteError("Impossible de calculer l'itinéraire pour le moment.");
+    }
+  }
+
+  function clearDestination() {
+    setDestination(null);
+    setAddressInput("");
+    setGeoStatus("idle");
+    setRoute(null);
+    setRouteError(null);
+    setNavigationActive(false);
+    setCurrentStepIndex(0);
+  }
+
+  return (
+    <main className="map-wrap">
+      <aside className="ui-panel" aria-label="Commandes HandiWay">
+        <div className="panel-heading">
+          <div>
+            <p className="panel-kicker">HandiWay</p>
+            <h1 className="ui-title">Carte accessible</h1>
+          </div>
+          <span className="aid-badge">{selectedAidLabel}</span>
         </div>
 
-        {/* Adresse */}
-        <div style={{ marginTop: 10 }}>
-          <div className="ui-sub" style={{ marginBottom: 6 }}>
-            Adresse / destination
-          </div>
-
-          <div style={{ display: "flex", gap: 8 }}>
+        <section className="panel-section" aria-labelledby="destination-title">
+          <h2 id="destination-title">Destination</h2>
+          <div className="search-row">
             <input
-              value={addressInput}
-              onChange={(e) => {
-                const v = e.target.value;
-                setAddressInput(v);
-                setPendingAddress(v.trim() ? v : null);
+              aria-label="Adresse ou destination"
+              className="text-input"
+              onChange={(event) => {
+                setAddressInput(event.target.value);
                 setGeoStatus("idle");
               }}
-              placeholder="Ex: 10 rue de Rivoli, Paris"
-              style={{
-                flex: 1,
-                padding: "8px 10px",
-                borderRadius: 12,
-                border: "1px solid rgba(255,255,255,0.18)",
-                background: "rgba(0,0,0,0.35)",
-                color: "white",
-                outline: "none",
+              onKeyDown={(event) => {
+                if (event.key === "Enter") confirmAddress();
               }}
+              placeholder="10 rue de Rivoli, Paris"
+              value={addressInput}
             />
-
-            {pendingAddress && (
-              <button className="btn" onClick={confirmAddress} disabled={geoStatus === "loading"}>
-                {geoStatus === "loading" ? "..." : "Confirmer"}
-              </button>
-            )}
+            <button className="btn" disabled={!addressInput.trim() || geoStatus === "loading"} onClick={confirmAddress} type="button">
+              {geoStatus === "loading" ? "..." : "OK"}
+            </button>
           </div>
 
-          {geoStatus === "notfound" && (
-            <div className="ui-sub" style={{ marginTop: 6 }}>
-              Adresse introuvable.
-            </div>
-          )}
-          {geoStatus === "error" && (
-            <div className="ui-sub" style={{ marginTop: 6 }}>
-              Erreur de recherche.
-            </div>
-          )}
+          {geoStatus === "notfound" && <p className="status error">Adresse introuvable.</p>}
+          {geoStatus === "error" && <p className="status error">Erreur pendant la recherche.</p>}
 
-          {dest && (
-            <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button
-                className="btn ghost"
-                onClick={() => {
-                  const map = mapRef.current;
-                  if (map) map.setView([dest.lat, dest.lng], 16, { animate: true });
-                }}
-              >
-                Aller à la destination
-              </button>
-
-              <button
-                className="btn ghost"
-                onClick={() => {
-                  setDest(null);
-                  setAddressInput("");
-                  setPendingAddress(null);
-                  setGeoStatus("idle");
-                }}
-              >
-                Effacer
-              </button>
-
-              <button className="btn" onClick={fetchRoute}>
-                Calculer itinéraire
-              </button>
-
-              {navigationActive ? (
-                <button className="btn ghost" onClick={() => setNavigationActive(false)}>
-                  Arrêter navigation
+          {destination && (
+            <div className="destination-card">
+              <p>{destination.label}</p>
+              <div className="button-row">
+                <button className="btn ghost" onClick={() => mapRef.current?.setView([destination.lat, destination.lng], 16)} type="button">
+                  Voir
                 </button>
-              ) : (
-                <button
-                  className="btn"
-                  onClick={() => {
-                    if (!route) {
-                      fetchRoute();
-                      return;
-                    }
-                    setNavigationActive(true);
-                  }}
-                >
-                  Démarrer navigation
+                <button className="btn ghost" onClick={clearDestination} type="button">
+                  Effacer
                 </button>
-              )}
+                <button className="btn" disabled={routeStatus === "loading"} onClick={fetchRoute} type="button">
+                  {routeStatus === "loading" ? "Calcul..." : "Itinéraire"}
+                </button>
+              </div>
             </div>
           )}
 
-          {routeError && (
-            <div className="ui-sub" style={{ marginTop: 8, color: "#ff7b7b" }}>
-              {routeError}
-            </div>
-          )}
+          {routeError && <p className="status error">{routeError}</p>}
 
           {route && (
-            <>
-              <div className="ui-sub" style={{ marginTop: 8 }}>
-                Itinéraire : {(route.distance / 1000).toFixed(1)} km • {(route.duration / 60).toFixed(0)} min
-              </div>
-              {route.steps.length > 0 && (
-                <div className="ui-sub" style={{ marginTop: 4 }}>
-                  Prochaine étape : {route.steps[currentStepIndex]?.instruction ?? "..."}
-                </div>
+            <div className="route-summary">
+              <strong>
+                {formatDistance(route.distance)} · {formatDuration(route.duration)}
+              </strong>
+              {nearbyObstacles.length > 0 && (
+                <span>{nearbyObstacles.length} obstacle(s) signalé(s) près du trajet.</span>
               )}
-            </>
+              {nextStep && <span>Prochaine étape : {nextStep.instruction}</span>}
+              <button
+                className="btn ghost"
+                onClick={() => setNavigationActive((active) => !active)}
+                type="button"
+              >
+                {navigationActive ? "Arrêter navigation" : "Démarrer navigation"}
+              </button>
+            </div>
           )}
-        </div>
+        </section>
 
-        {/* Signalement */}
-        <div className="ui-sub" style={{ marginTop: 12, marginBottom: 10 }}>
-          {reportMode
-            ? "Mode signalement activé : clique sur la carte."
-            : "Clique sur “Signaler” pour ajouter un obstacle."}
-        </div>
-
-        <div style={{ display: "flex", gap: 10 }}>
-          <button
-            className={`btn ${reportMode ? "ghost" : ""}`}
-            onClick={() => setReportMode((v) => !v)}
-          >
-            {reportMode ? "Annuler" : "Signaler"}
-          </button>
-
-          <button className="btn ghost" onClick={recenterToMyPosition}>
-            Ma position
-          </button>
-        </div>
-      </div>
+        <section className="panel-section" aria-labelledby="report-title">
+          <h2 id="report-title">Signalements</h2>
+          <p className="status">
+            {reportMode ? "Cliquez sur la carte pour placer un obstacle." : `${obstacles.length} obstacle(s) enregistré(s).`}
+          </p>
+          <div className="button-row">
+            <button className={`btn ${reportMode ? "ghost" : ""}`} onClick={() => setReportMode((value) => !value)} type="button">
+              {reportMode ? "Annuler" : "Signaler"}
+            </button>
+            <button className="btn ghost" onClick={recenterToMyPosition} type="button">
+              Ma position
+            </button>
+          </div>
+        </section>
+      </aside>
 
       <MapContainer
         center={center}
-        zoom={16}
         className="map"
-        zoomControl={false}
-        ref={(ref) => {
-          mapRef.current = ref;
+        ref={(map) => {
+          mapRef.current = map;
         }}
+        zoom={16}
+        zoomControl={false}
       >
         <ZoomControl position="topright" />
-
         <ClickToAddObstacle enabled={reportMode} onPick={openDraft} />
 
         <TileLayer
@@ -499,57 +486,31 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
         />
 
         {route && route.coords.length > 0 && (
-          <Polyline
-            positions={route.coords}
-            pathOptions={{ color: "#76c7ff", weight: 7, opacity: 0.85 }}
-          />
+          <Polyline positions={route.coords} pathOptions={{ color: "#0f766e", weight: 7, opacity: 0.86 }} />
         )}
 
-        {dest && (
-          <Marker position={[dest.lat, dest.lng]} icon={DefaultIcon}>
+        {destination && (
+          <Marker icon={destinationIcon} position={[destination.lat, destination.lng]}>
             <Popup>
-              <div style={{ minWidth: 220 }}>
-                <div style={{ fontWeight: 700 }}>Destination</div>
-                <div style={{ marginTop: 6 }}>{dest.label}</div>
-              </div>
+              <strong>Destination</strong>
+              <p>{destination.label}</p>
             </Popup>
           </Marker>
         )}
 
-        {(userLocation ?? center) && (
-          <Marker position={userLocation ?? center} icon={DefaultIcon}>
-            <Popup>Vous</Popup>
-          </Marker>
-        )}
+        <Marker icon={userIcon} position={center}>
+          <Popup>Votre position</Popup>
+        </Marker>
 
-        {obstacles.map((o) => (
-          <Marker key={o.id} position={[o.lat, o.lng]} icon={DefaultIcon}>
+        {obstacles.map((obstacle) => (
+          <Marker icon={obstacleIcon} key={obstacle.id} position={[obstacle.lat, obstacle.lng]}>
             <Popup>
-              <div style={{ minWidth: 220 }}>
-                <div style={{ fontWeight: 700 }}>{o.type}</div>
-                {o.description ? (
-                  <div style={{ marginTop: 6 }}>{o.description}</div>
-                ) : (
-                  <div style={{ marginTop: 6, fontStyle: "italic", opacity: 0.8 }}>
-                    (pas de description)
-                  </div>
-                )}
-
-                <div style={{ marginTop: 10 }}>
-                  <button
-                    onClick={() => removeObstacle(o.id)}
-                    style={{
-                      padding: "6px 10px",
-                      borderRadius: 10,
-                      border: "1px solid rgba(255,255,255,0.2)",
-                      cursor: "pointer",
-                      background: "transparent",
-                      color: "white",
-                    }}
-                  >
-                    Supprimer
-                  </button>
-                </div>
+              <div className="popup-content">
+                <strong>{obstacle.type}</strong>
+                <p>{obstacle.description || "Aucune description."}</p>
+                <button className="popup-delete" onClick={() => removeObstacle(obstacle.id)} type="button">
+                  Supprimer
+                </button>
               </div>
             </Popup>
           </Marker>
@@ -558,50 +519,55 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
 
       {draft && (
         <div className="modal-backdrop" onMouseDown={cancelDraft}>
-          <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
-            <div className="modal-title">Nouveau signalement</div>
+          <form
+            className="modal"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitDraft();
+            }}
+          >
+            <h2 className="modal-title">Nouveau signalement</h2>
 
             <label className="field">
-              <span>Type d’obstacle</span>
+              <span>Type obstacle</span>
               <select
+                onChange={(event) => setDraft({ ...draft, type: event.target.value as ObstacleType })}
                 value={draft.type}
-                onChange={(e) =>
-                  setDraft({ ...draft, type: e.target.value as ObstacleType })
-                }
               >
-                {typeOptions.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
+                {obstacleTypes.map((type) => (
+                  <option key={type} value={type}>
+                    {type}
                   </option>
                 ))}
               </select>
             </label>
 
             <label className="field">
-              <span>Description (optionnel)</span>
+              <span>Description</span>
               <textarea
-                value={draft.description}
-                onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-                placeholder="Ex: escalier sans rampe, travaux, trottoir très étroit…"
+                onChange={(event) => setDraft({ ...draft, description: event.target.value })}
+                placeholder="Ex : escalier sans rampe, travaux, trottoir très étroit..."
                 rows={3}
+                value={draft.description}
               />
             </label>
 
             <div className="modal-actions">
-              <button className="btn ghost" onClick={cancelDraft}>
+              <button className="btn ghost" onClick={cancelDraft} type="button">
                 Annuler
               </button>
-              <button className="btn" onClick={submitDraft}>
+              <button className="btn" type="submit">
                 Enregistrer
               </button>
             </div>
 
-            <div className="hint">
-              Coordonnées: {draft.lat.toFixed(5)}, {draft.lng.toFixed(5)}
-            </div>
-          </div>
+            <p className="hint">
+              Coordonnées : {draft.lat.toFixed(5)}, {draft.lng.toFixed(5)}
+            </p>
+          </form>
         </div>
       )}
-    </div>
+    </main>
   );
 }
