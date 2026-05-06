@@ -1,89 +1,126 @@
 "use client";
 
-import { useState } from "react";
 import dynamic from "next/dynamic";
+import { useState } from "react";
 
 const MapComponent = dynamic(() => import("../components/Map/MapComponent"), {
+  loading: () => <main className="loading-screen">Chargement de la carte...</main>,
   ssr: false,
 });
 
-type MobilityAid = "wheelchair" | "scooter" | "walker" | "cane" | "crutches" | "prosthetic";
+export type MobilityAid =
+  | "wheelchair"
+  | "scooter"
+  | "walker"
+  | "cane"
+  | "crutches"
+  | "prosthetic";
 
-const aids: { id: MobilityAid; name: string; emoji: string; description: string }[] = [
-  { id: "wheelchair", name: "Fauteuil roulant", emoji: "🪑", description: "Mobilité manuelle ou électrique" },
-  { id: "scooter", name: "Scooter électrique", emoji: "🛵", description: "Déplacement motorisé" },
-  { id: "walker", name: "Déambulateur", emoji: "🚶‍♂️", description: "Support pour la marche" },
-  { id: "cane", name: "Canne", emoji: "🦯", description: "Aide à la stabilité" },
-  { id: "crutches", name: "Béquilles", emoji: "🩼", description: "Support sous les bras" },
-  { id: "prosthetic", name: "Prothèse", emoji: "🦵", description: "Membre artificiel" },
+type Aid = {
+  id: MobilityAid;
+  name: string;
+  description: string;
+};
+
+const aids: Aid[] = [
+  {
+    id: "wheelchair",
+    name: "Fauteuil roulant",
+    description: "Trajets pensés pour éviter les marches et les passages trop étroits.",
+  },
+  {
+    id: "scooter",
+    name: "Scooter électrique",
+    description: "Itinéraires adaptés aux déplacements motorisés et aux trottoirs praticables.",
+  },
+  {
+    id: "walker",
+    name: "Déambulateur",
+    description: "Priorité aux chemins stables, lisibles et faciles à franchir.",
+  },
+  {
+    id: "cane",
+    name: "Canne",
+    description: "Repérage des obstacles qui gênent l'équilibre ou la progression.",
+  },
+  {
+    id: "crutches",
+    name: "Béquilles",
+    description: "Signalements utiles pour éviter les pentes raides et surfaces glissantes.",
+  },
+  {
+    id: "prosthetic",
+    name: "Prothèse",
+    description: "Parcours avec moins de ruptures de niveau et de détours imprévus.",
+  },
 ];
 
 export default function Home() {
-  const [showWelcome, setShowWelcome] = useState(true);
-  const [showSelection, setShowSelection] = useState(false);
+  const [screen, setScreen] = useState<"welcome" | "selection" | "map">("welcome");
   const [fadeOut, setFadeOut] = useState(false);
   const [selectedAid, setSelectedAid] = useState<MobilityAid | null>(null);
 
-  const handleStart = () => {
+  const transitionTo = (nextScreen: "selection" | "map") => {
     setFadeOut(true);
-    setTimeout(() => {
-      setShowWelcome(false);
-      setShowSelection(true);
+    window.setTimeout(() => {
+      setScreen(nextScreen);
       setFadeOut(false);
-    }, 500);
+    }, 320);
   };
 
   const handleSelectAid = (aid: MobilityAid) => {
     setSelectedAid(aid);
-    setFadeOut(true);
-    setTimeout(() => {
-      setShowSelection(false);
-      setFadeOut(false);
-    }, 500);
+    transitionTo("map");
   };
 
-  if (showWelcome) {
+  if (screen === "welcome") {
     return (
-      <div className={`welcome-container ${fadeOut ? 'fade-out' : ''}`}>
-        <div className="welcome-content">
-          <h1 className="welcome-title">HandiWay</h1>
-          <h2 className="welcome-subtitle">Signalement d'obstacles pour tous</h2>
+      <main className={`welcome-container ${fadeOut ? "fade-out" : ""}`}>
+        <section className="welcome-content" aria-labelledby="welcome-title">
+          <p className="eyebrow">Accessibilité urbaine collaborative</p>
+          <h1 className="welcome-title" id="welcome-title">
+            HandiWay
+          </h1>
+          <p className="welcome-subtitle">Trouvez un passage praticable. Signalez ce qui bloque.</p>
           <p className="welcome-description">
-            Découvrez et signalez les obstacles urbains pour améliorer l'accessibilité.
-            Ensemble, rendons la ville plus inclusive pour tous les citoyens.
+            HandiWay aide les personnes à mobilité réduite à préparer leurs déplacements, repérer les
+            obstacles et enrichir une carte utile pour toute la communauté.
           </p>
-          <button className="welcome-button" onClick={handleStart}>
-            Commencer l'exploration
+          <button className="welcome-button" onClick={() => transitionTo("selection")} type="button">
+            Explorer la carte
           </button>
-        </div>
-      </div>
+        </section>
+      </main>
     );
   }
 
-  if (showSelection) {
+  if (screen === "selection") {
     return (
-      <div className={`selection-container ${fadeOut ? 'fade-out' : ''}`}>
-        <div className="selection-content">
-          <h1 className="selection-title">Choisissez votre aide à la mobilité</h1>
+      <main className={`selection-container ${fadeOut ? "fade-out" : ""}`}>
+        <section className="selection-content" aria-labelledby="selection-title">
+          <p className="eyebrow">Profil de déplacement</p>
+          <h1 className="selection-title" id="selection-title">
+            Choisissez votre aide à la mobilité
+          </h1>
           <p className="selection-subtitle">
-            Cela nous aide à personnaliser votre expérience et à signaler les obstacles pertinents.
+            Le choix ajuste les indications et rend les signalements plus pertinents.
           </p>
           <div className="aids-grid">
             {aids.map((aid, index) => (
-              <div
-                key={aid.id}
+              <button
                 className="aid-card"
-                style={{ animationDelay: `${index * 0.1}s` }}
+                key={aid.id}
                 onClick={() => handleSelectAid(aid.id)}
+                style={{ animationDelay: `${index * 0.06}s` }}
+                type="button"
               >
-                <div className="aid-emoji">{aid.emoji}</div>
-                <h3 className="aid-name">{aid.name}</h3>
-                <p className="aid-description">{aid.description}</p>
-              </div>
+                <span className="aid-name">{aid.name}</span>
+                <span className="aid-description">{aid.description}</span>
+              </button>
             ))}
           </div>
-        </div>
-      </div>
+        </section>
+      </main>
     );
   }
 
