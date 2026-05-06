@@ -225,6 +225,56 @@ textarea:focus-visible {
   inset: 0;
 }
 
+.sidebar {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 1001;
+  display: grid;
+  gap: 10px;
+}
+
+.sidebar-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 48px;
+  min-height: 48px;
+  border-radius: 999px;
+  border: 1px solid rgba(23, 32, 51, 0.12);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--foreground);
+  padding: 0 12px;
+  transition: width 0.2s ease, background 0.2s ease;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.sidebar-item:hover,
+.sidebar-item.active {
+  width: 200px;
+  background: var(--panel);
+}
+
+.sidebar-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  font-size: 1.05rem;
+}
+
+.sidebar-label {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.sidebar-item:hover .sidebar-label,
+.sidebar-item.active .sidebar-label {
+  opacity: 1;
+}
+
 .map {
   height: 100%;
   width: 100%;
@@ -233,9 +283,9 @@ textarea:focus-visible {
 .ui-panel {
   position: fixed;
   top: 14px;
-  left: 14px;
+  left: 228px;
   z-index: 1000;
-  width: min(410px, calc(100vw - 28px));
+  width: min(410px, calc(100vw - 242px));
   max-height: calc(100dvh - 28px);
   overflow: auto;
   border: 1px solid var(--line);

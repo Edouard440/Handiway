@@ -15,6 +15,29 @@ import type { MobilityAid } from "@/app/page";
 
 type MapComponentProps = {
   selectedAid: MobilityAid | null;
+  onBackToSelection: () => void;
+};
+
+type SidebarTab = "destination" | "departure" | "recents" | "favorites" | "mode";
+
+type SavedAddress = {
+  id: string;
+  label: string;
+  address: string;
+  lat: number;
+  lng: number;
+};
+
+type RouteRecord = {
+  id: string;
+  title: string;
+  originLabel: string;
+  destinationLabel: string;
+  distance: number;
+  duration: number;
+  createdAt: string;
+  origin: [number, number];
+  destination: [number, number];
 };
 
 type ObstacleType =
@@ -122,6 +145,55 @@ function saveObstacles(obstacles: Obstacle[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(obstacles));
 }
 
+const SAVED_ADDRESSES_KEY = "handiway_saved_addresses_v1";
+const FAVORITE_ROUTES_KEY = "handiway_favorite_routes_v1";
+const RECENT_ROUTES_KEY = "handiway_recent_routes_v1";
+
+function loadSavedAddresses(): SavedAddress[] {
+  try {
+    const raw = localStorage.getItem(SAVED_ADDRESSES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveSavedAddresses(addresses: SavedAddress[]) {
+  localStorage.setItem(SAVED_ADDRESSES_KEY, JSON.stringify(addresses));
+}
+
+function loadFavoriteRoutes(): RouteRecord[] {
+  try {
+    const raw = localStorage.getItem(FAVORITE_ROUTES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveFavoriteRoutes(routes: RouteRecord[]) {
+  localStorage.setItem(FAVORITE_ROUTES_KEY, JSON.stringify(routes));
+}
+
+function loadRecentRoutes(): RouteRecord[] {
+  try {
+    const raw = localStorage.getItem(RECENT_ROUTES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentRoutes(routes: RouteRecord[]) {
+  localStorage.setItem(RECENT_ROUTES_KEY, JSON.stringify(routes));
+}
+
 function ClickToAddObstacle({
   enabled,
   onPick,
@@ -178,7 +250,7 @@ function isRouteState(value: RouteState | { error?: string }): value is RouteSta
   );
 }
 
-export default function MapComponent({ selectedAid }: MapComponentProps) {
+export default function MapComponent({ selectedAid, onBackToSelection }: MapComponentProps) {
   const mapRef = useRef<L.Map | null>(null);
   const [position, setPosition] = useState<[number, number] | null>(null);
   const [obstacles, setObstacles] = useState<Obstacle[]>(() => loadObstacles());
@@ -194,6 +266,17 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
   const [geoStatus, setGeoStatus] = useState<"idle" | "loading" | "notfound" | "error">("idle");
   const [routeStatus, setRouteStatus] = useState<"idle" | "loading" | "error">("idle");
   const [routeError, setRouteError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<SidebarTab>("destination");
+  const [departureMode, setDepartureMode] = useState<"address" | "saved" | "current">("current");
+  const [departureAddressInput, setDepartureAddressInput] = useState("");
+  const [departureLocation, setDepartureLocation] = useState<{ label: string; coords: [number, number] } | null>(
+    null
+  );
+  const [departureStatus, setDepartureStatus] = useState<"idle" | "loading" | "notfound" | "error">("idle");
+  const [savedAddresses, setSavedAddresses] = useState<SavedAddress[]>(() => loadSavedAddresses());
+  const [savedAddressId, setSavedAddressId] = useState<string | null>(null);
+  const [favoriteRoutes, setFavoriteRoutes] = useState<RouteRecord[]>(() => loadFavoriteRoutes());
+  const [recentRoutes, setRecentRoutes] = useState<RouteRecord[]>(() => loadRecentRoutes());
 
   const center = position ?? DEFAULT_CENTER;
   const selectedAidLabel = selectedAid ? aidLabels[selectedAid] : "non défini";
@@ -293,6 +376,153 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
     );
   }
 
+  async function geocodeLocation(query: string) {
+    const response = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`);
+    const data = (await response.json()) as {
+      found?: boolean;
+      lat?: number;
+      lon?: number;
+      display_name?: string;
+    };
+
+    if (!response.ok || !data.found || typeof data.lat !== "number" || typeof data.lon !== "number") {
+      return null;
+    }
+
+    return { lat: data.lat, lng: data.lon, label: data.display_name ?? query };
+  }
+
+  async function confirmDepartureAddress() {
+    const query = departureAddressInput.trim();
+    if (!query) return;
+
+    setDepartureStatus("loading");
+    setRouteError(null);
+
+    try {
+      const location = await geocodeLocation(query);
+
+      if (!location) {
+        setDepartureStatus("notfound");
+        return;
+      }
+
+      setDepartureLocation({ label: location.label, coords: [location.lat, location.lng] });
+      setDepartureStatus("idle");
+      setSavedAddressId(null);
+      mapRef.current?.setView([location.lat, location.lng], 14, { animate: true });
+    } catch {
+      setDepartureStatus("error");
+    }
+  }
+
+  function selectSavedDeparture(id: string) {
+    const address = savedAddresses.find((item) => item.id === id);
+    if (!address) return;
+
+    setSavedAddressId(id);
+    setDepartureMode("saved");
+    setDepartureLocation({ label: address.label, coords: [address.lat, address.lng] });
+    setDepartureAddressInput(address.address);
+    setDepartureStatus("idle");
+    mapRef.current?.setView([address.lat, address.lng], 14, { animate: true });
+  }
+
+  function useCurrentDeparture() {
+    if (!position) {
+      setDepartureStatus("error");
+      return;
+    }
+
+    setDepartureMode("current");
+    setDepartureLocation({ label: "Lieu actuel", coords: position });
+    setDepartureStatus("idle");
+  }
+
+  function saveDepartureAddress() {
+    if (!departureLocation || departureMode !== "address") return;
+
+    const label = departureAddressInput.trim() || departureLocation.label;
+    const next = [
+      {
+        id: globalThis.crypto?.randomUUID?.() ?? String(Date.now()),
+        label,
+        address: departureAddressInput.trim(),
+        lat: departureLocation.coords[0],
+        lng: departureLocation.coords[1],
+      },
+      ...savedAddresses,
+    ].slice(0, 6);
+
+    setSavedAddresses(next);
+    saveSavedAddresses(next);
+    setDepartureMode("saved");
+    setSavedAddressId(next[0].id);
+  }
+
+  function loadRouteRecord(record: RouteRecord) {
+    setDepartureLocation({ label: record.originLabel, coords: record.origin });
+    setDestination({ lat: record.destination[0], lng: record.destination[1], label: record.destinationLabel });
+    setRoute(null);
+    setRouteError(null);
+    setNavigationActive(false);
+    setAddressInput("");
+    setDepartureMode(record.originLabel === "Lieu actuel" ? "current" : "saved");
+    setActiveTab("destination");
+    mapRef.current?.setView(record.destination, 16, { animate: true });
+  }
+
+  function addCurrentRouteToFavorites() {
+    if (!route || !destination) return;
+
+    const title = `${departureLocation?.label ?? "Position actuelle"} → ${destination.label}`;
+    if (favoriteRoutes.some((item) => item.title === title && item.destinationLabel === destination.label)) {
+      return;
+    }
+
+    const favorite: RouteRecord = {
+      id: globalThis.crypto?.randomUUID?.() ?? String(Date.now()),
+      title,
+      originLabel: departureLocation?.label ?? "Position actuelle",
+      destinationLabel: destination.label,
+      distance: route.distance,
+      duration: route.duration,
+      createdAt: new Date().toISOString(),
+      origin: departureLocation?.coords ?? position ?? DEFAULT_CENTER,
+      destination: [destination.lat, destination.lng],
+    };
+
+    const next = [favorite, ...favoriteRoutes].slice(0, 6);
+    setFavoriteRoutes(next);
+    saveFavoriteRoutes(next);
+  }
+
+  function removeFavoriteRoute(id: string) {
+    const next = favoriteRoutes.filter((item) => item.id !== id);
+    setFavoriteRoutes(next);
+    saveFavoriteRoutes(next);
+  }
+
+  function addRecentRoute(routeData: RouteState) {
+    if (!destination) return;
+
+    const record: RouteRecord = {
+      id: globalThis.crypto?.randomUUID?.() ?? String(Date.now()),
+      title: `${departureLocation?.label ?? "Position actuelle"} → ${destination.label}`,
+      originLabel: departureLocation?.label ?? "Position actuelle",
+      destinationLabel: destination.label,
+      distance: routeData.distance,
+      duration: routeData.duration,
+      createdAt: new Date().toISOString(),
+      origin: departureLocation?.coords ?? position ?? DEFAULT_CENTER,
+      destination: [destination.lat, destination.lng],
+    };
+
+    const next = [record, ...recentRoutes].slice(0, 6);
+    setRecentRoutes(next);
+    saveRecentRoutes(next);
+  }
+
   async function confirmAddress() {
     const query = addressInput.trim();
     if (!query) return;
@@ -330,7 +560,8 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
   }
 
   async function fetchRoute() {
-    if (!position || !destination) {
+    const origin = departureLocation?.coords ?? position;
+    if (!origin || !destination) {
       setRouteError("Position ou destination manquante.");
       return;
     }
@@ -339,8 +570,8 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
     setRouteError(null);
 
     const params = new URLSearchParams({
-      fromLat: String(position[0]),
-      fromLng: String(position[1]),
+      fromLat: String(origin[0]),
+      fromLng: String(origin[1]),
       toLat: String(destination.lat),
       toLng: String(destination.lng),
       profile: profileForAid(selectedAid),
@@ -357,6 +588,7 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
       setRoute(data);
       setCurrentStepIndex(0);
       setNavigationActive(true);
+      addRecentRoute(data);
 
       if (data.coords.length > 0) {
         mapRef.current?.fitBounds(L.latLngBounds(data.coords), { padding: [64, 64] });
@@ -380,6 +612,41 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
 
   return (
     <main className="map-wrap">
+      <nav className="sidebar" aria-label="Navigation rapide">
+        <button
+          type="button"
+          className={`sidebar-item ${activeTab === "mode" ? "active" : ""}`}
+          onClick={() => setActiveTab("mode")}
+        >
+          <span className="sidebar-icon" aria-hidden="true">≡</span>
+          <span className="sidebar-label">Changer le mode</span>
+        </button>
+        <button
+          type="button"
+          className={`sidebar-item ${activeTab === "departure" ? "active" : ""}`}
+          onClick={() => setActiveTab("departure")}
+        >
+          <span className="sidebar-icon" aria-hidden="true">📍</span>
+          <span className="sidebar-label">Lieu de départ</span>
+        </button>
+        <button
+          type="button"
+          className={`sidebar-item ${activeTab === "recents" ? "active" : ""}`}
+          onClick={() => setActiveTab("recents")}
+        >
+          <span className="sidebar-icon" aria-hidden="true">🕒</span>
+          <span className="sidebar-label">Trajets récents</span>
+        </button>
+        <button
+          type="button"
+          className={`sidebar-item ${activeTab === "favorites" ? "active" : ""}`}
+          onClick={() => setActiveTab("favorites")}
+        >
+          <span className="sidebar-icon" aria-hidden="true">★</span>
+          <span className="sidebar-label">Favoris</span>
+        </button>
+      </nav>
+
       <aside className="ui-panel" aria-label="Commandes HandiWay">
         <div className="panel-heading">
           <div>
@@ -388,6 +655,105 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
           </div>
           <span className="aid-badge">{selectedAidLabel}</span>
         </div>
+
+        <section className="panel-section" aria-labelledby="departure-title">
+          <h2 id="departure-title">Lieu de départ</h2>
+          <label className="field">
+            <span>Type de départ</span>
+            <select
+              className="text-input"
+              value={departureMode}
+              onChange={(event) => {
+                const value = event.target.value as "current" | "address" | "saved";
+                setDepartureMode(value);
+                setDepartureStatus("idle");
+              }}
+            >
+              <option value="current">Lieu actuel</option>
+              <option value="address">Adresse</option>
+              <option value="saved">Adresse enregistrée</option>
+            </select>
+          </label>
+
+          {departureMode === "current" && (
+            <div className="button-row" style={{ marginTop: 10 }}>
+              <button className="btn" onClick={useCurrentDeparture} type="button">
+                Utiliser mon lieu actuel
+              </button>
+            </div>
+          )}
+
+          {departureMode === "address" && (
+            <>
+              <div className="search-row">
+                <input
+                  aria-label="Adresse de départ"
+                  className="text-input"
+                  onChange={(event) => {
+                    setDepartureAddressInput(event.target.value);
+                    setDepartureStatus("idle");
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") confirmDepartureAddress();
+                  }}
+                  placeholder="Adresse de départ"
+                  value={departureAddressInput}
+                />
+                <button
+                  className="btn"
+                  disabled={!departureAddressInput.trim() || departureStatus === "loading"}
+                  onClick={confirmDepartureAddress}
+                  type="button"
+                >
+                  {departureStatus === "loading" ? "..." : "OK"}
+                </button>
+              </div>
+              <div className="button-row" style={{ marginTop: 10 }}>
+                <button
+                  className="btn ghost"
+                  onClick={saveDepartureAddress}
+                  disabled={!departureAddressInput.trim() || !departureLocation}
+                  type="button"
+                >
+                  Enregistrer l'adresse
+                </button>
+              </div>
+            </>
+          )}
+
+          {departureMode === "saved" && (
+            <div className="button-row" style={{ flexDirection: "column", gap: "8px" }}>
+              {savedAddresses.length === 0 ? (
+                <p className="status">Aucune adresse enregistrée.</p>
+              ) : (
+                savedAddresses.map((address) => (
+                  <button
+                    key={address.id}
+                    className={`btn ${savedAddressId === address.id ? "ghost" : ""}`}
+                    onClick={() => selectSavedDeparture(address.id)}
+                    type="button"
+                  >
+                    {address.label}
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+
+          {(departureStatus === "notfound" || departureStatus === "error") && (
+            <p className="status error">
+              {departureStatus === "notfound"
+                ? "Adresse de départ introuvable."
+                : "Erreur pendant la recherche du départ."}
+            </p>
+          )}
+
+          {departureLocation && (
+            <p className="status" style={{ marginTop: 10 }}>
+              Départ sélectionné : <strong>{departureLocation.label}</strong>
+            </p>
+          )}
+        </section>
 
         <section className="panel-section" aria-labelledby="destination-title">
           <h2 id="destination-title">Destination</h2>
@@ -441,14 +807,74 @@ export default function MapComponent({ selectedAid }: MapComponentProps) {
                 <span>{nearbyObstacles.length} obstacle(s) signalé(s) près du trajet.</span>
               )}
               {nextStep && <span>Prochaine étape : {nextStep.instruction}</span>}
-              <button
-                className="btn ghost"
-                onClick={() => setNavigationActive((active) => !active)}
-                type="button"
-              >
-                {navigationActive ? "Arrêter navigation" : "Démarrer navigation"}
-              </button>
+              <div className="button-row">
+                <button
+                  className="btn ghost"
+                  onClick={() => setNavigationActive((active) => !active)}
+                  type="button"
+                >
+                  {navigationActive ? "Arrêter navigation" : "Démarrer navigation"}
+                </button>
+                <button
+                  className="btn ghost"
+                  onClick={addCurrentRouteToFavorites}
+                  type="button"
+                >
+                  Ajouter aux favoris
+                </button>
+              </div>
             </div>
+          )}
+        </section>
+
+        <section className="panel-section" aria-labelledby="quick-nav-title">
+          <h2 id="quick-nav-title">Navigation rapide</h2>
+          {activeTab === "recents" && (
+            <div className="button-row" style={{ flexDirection: "column", gap: "12px" }}>
+              {recentRoutes.length === 0 ? (
+                <p className="status">Aucun trajet récent.</p>
+              ) : (
+                recentRoutes.map((item) => (
+                  <div key={item.id} className="destination-card">
+                    <strong>{item.title}</strong>
+                    <span>{formatDistance(item.distance)} · {formatDuration(item.duration)}</span>
+                    <span>Le {new Date(item.createdAt).toLocaleDateString('fr-FR')}</span>
+                    <div className="button-row" style={{ marginTop: 10 }}>
+                      <button className="btn ghost" onClick={() => loadRouteRecord(item)} type="button">
+                        Charger
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {activeTab === "favorites" && (
+            <div className="button-row" style={{ flexDirection: "column", gap: "12px" }}>
+              {favoriteRoutes.length === 0 ? (
+                <p className="status">Aucun favoris ajouté.</p>
+              ) : (
+                favoriteRoutes.map((item) => (
+                  <div key={item.id} className="destination-card">
+                    <strong>{item.title}</strong>
+                    <span>{formatDistance(item.distance)} · {formatDuration(item.duration)}</span>
+                    <div className="button-row" style={{ marginTop: 10 }}>
+                      <button className="btn ghost" onClick={() => loadRouteRecord(item)} type="button">
+                        Charger
+                      </button>
+                      <button className="btn ghost" onClick={() => removeFavoriteRoute(item.id)} type="button">
+                        Supprimer
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {(activeTab === "mode" || activeTab === "departure" || activeTab === "destination") && (
+            <p className="status">Sélectionnez « Trajets récents » ou « Favoris » à gauche pour charger un trajet.</p>
           )}
         </section>
 

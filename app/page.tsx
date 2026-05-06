@@ -73,6 +73,14 @@ export default function Home() {
     transitionTo("map");
   };
 
+  const handleBackToSelection = () => {
+    setFadeOut(true);
+    window.setTimeout(() => {
+      setScreen("selection");
+      setFadeOut(false);
+    }, 320);
+  };
+
   if (screen === "welcome") {
     return (
       <main className={`welcome-container ${fadeOut ? "fade-out" : ""}`}>
@@ -124,5 +132,5 @@ export default function Home() {
     );
   }
 
-  return <MapComponent selectedAid={selectedAid} />;
+  return <MapComponent selectedAid={selectedAid} onBackToSelection={handleBackToSelection} />;
 }
