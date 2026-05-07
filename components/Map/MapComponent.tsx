@@ -18,7 +18,7 @@ type MapComponentProps = {
   onBackToSelection: () => void;
 };
 
-type SidebarTab = "destination" | "departure" | "recents" | "favorites" | "mode";
+type SidebarTab = "destination" | "departure" | "recents" | "favorites" | "mode" | "reports";
 
 type SavedAddress = {
   id: string;
@@ -443,6 +443,16 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
     if (!departureLocation || departureMode !== "address") return;
 
     const label = departureAddressInput.trim() || departureLocation.label;
+    const existingAddress = savedAddresses.find(
+      (address) => address.label === label || address.address === departureAddressInput.trim()
+    );
+    if (existingAddress) {
+      setDepartureMode("saved");
+      setSavedAddressId(existingAddress.id);
+      setActiveTab("favorites");
+      return;
+    }
+
     const next = [
       {
         id: globalThis.crypto?.randomUUID?.() ?? String(Date.now()),
@@ -458,6 +468,53 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
     saveSavedAddresses(next);
     setDepartureMode("saved");
     setSavedAddressId(next[0].id);
+    setActiveTab("favorites");
+  }
+
+  function addDestinationToFavorites() {
+    if (!destination) return;
+
+    const existingAddress = savedAddresses.find(
+      (address) =>
+        address.label === destination.label || (address.lat === destination.lat && address.lng === destination.lng)
+    );
+    if (existingAddress) {
+      setSavedAddressId(existingAddress.id);
+      setActiveTab("favorites");
+      return;
+    }
+
+    const favorite: SavedAddress = {
+      id: globalThis.crypto?.randomUUID?.() ?? String(Date.now()),
+      label: destination.label,
+      address: destination.label,
+      lat: destination.lat,
+      lng: destination.lng,
+    };
+
+    const next = [favorite, ...savedAddresses].slice(0, 6);
+    setSavedAddresses(next);
+    saveSavedAddresses(next);
+    setSavedAddressId(favorite.id);
+    setActiveTab("favorites");
+  }
+
+  function removeSavedAddress(id: string) {
+    const next = savedAddresses.filter((address) => address.id !== id);
+    setSavedAddresses(next);
+    saveSavedAddresses(next);
+    if (savedAddressId === id) setSavedAddressId(null);
+  }
+
+  function loadFavoriteAsDestination(address: SavedAddress) {
+    setDestination({ lat: address.lat, lng: address.lng, label: address.label });
+    setAddressInput(address.address);
+    setRoute(null);
+    setRouteError(null);
+    setNavigationActive(false);
+    setCurrentStepIndex(0);
+    setActiveTab("destination");
+    mapRef.current?.setView([address.lat, address.lng], 16, { animate: true });
   }
 
   function loadRouteRecord(record: RouteRecord) {
@@ -623,6 +680,14 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
         </button>
         <button
           type="button"
+          className={`sidebar-item ${activeTab === "destination" ? "active" : ""}`}
+          onClick={() => setActiveTab("destination")}
+        >
+          <span className="sidebar-icon" aria-hidden="true">→</span>
+          <span className="sidebar-label">Destination</span>
+        </button>
+        <button
+          type="button"
           className={`sidebar-item ${activeTab === "departure" ? "active" : ""}`}
           onClick={() => setActiveTab("departure")}
         >
@@ -645,6 +710,14 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
           <span className="sidebar-icon" aria-hidden="true">★</span>
           <span className="sidebar-label">Favoris</span>
         </button>
+        <button
+          type="button"
+          className={`sidebar-item ${activeTab === "reports" ? "active" : ""}`}
+          onClick={() => setActiveTab("reports")}
+        >
+          <span className="sidebar-icon" aria-hidden="true">!</span>
+          <span className="sidebar-label">Signalements</span>
+        </button>
       </nav>
 
       <aside className="ui-panel" aria-label="Commandes HandiWay">
@@ -656,6 +729,21 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
           <span className="aid-badge">{selectedAidLabel}</span>
         </div>
 
+        {activeTab === "mode" && (
+          <section className="panel-section" aria-labelledby="mode-title">
+            <h2 id="mode-title">Mode de déplacement</h2>
+            <p className="status">
+              Mode actuel : <strong>{selectedAidLabel}</strong>
+            </p>
+            <div className="button-row">
+              <button className="btn" onClick={onBackToSelection} type="button">
+                Changer le mode
+              </button>
+            </div>
+          </section>
+        )}
+
+        {activeTab === "departure" && (
         <section className="panel-section" aria-labelledby="departure-title">
           <h2 id="departure-title">Lieu de départ</h2>
           <label className="field">
@@ -671,7 +759,7 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
             >
               <option value="current">Lieu actuel</option>
               <option value="address">Adresse</option>
-              <option value="saved">Adresse enregistrée</option>
+              <option value="saved">Favoris</option>
             </select>
           </label>
 
@@ -715,7 +803,7 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
                   disabled={!departureAddressInput.trim() || !departureLocation}
                   type="button"
                 >
-                  Enregistrer l'adresse
+                  Ajouter aux favoris
                 </button>
               </div>
             </>
@@ -724,7 +812,7 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
           {departureMode === "saved" && (
             <div className="button-row" style={{ flexDirection: "column", gap: "8px" }}>
               {savedAddresses.length === 0 ? (
-                <p className="status">Aucune adresse enregistrée.</p>
+                <p className="status">Aucun favori ajouté.</p>
               ) : (
                 savedAddresses.map((address) => (
                   <button
@@ -754,7 +842,9 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
             </p>
           )}
         </section>
+        )}
 
+        {activeTab === "destination" && (
         <section className="panel-section" aria-labelledby="destination-title">
           <h2 id="destination-title">Destination</h2>
           <div className="search-row">
@@ -788,6 +878,9 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
                 </button>
                 <button className="btn ghost" onClick={clearDestination} type="button">
                   Effacer
+                </button>
+                <button className="btn ghost" onClick={addDestinationToFavorites} type="button">
+                  Ajouter aux favoris
                 </button>
                 <button className="btn" disabled={routeStatus === "loading"} onClick={fetchRoute} type="button">
                   {routeStatus === "loading" ? "Calcul..." : "Itinéraire"}
@@ -826,9 +919,11 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
             </div>
           )}
         </section>
+        )}
 
+        {(activeTab === "recents" || activeTab === "favorites") && (
         <section className="panel-section" aria-labelledby="quick-nav-title">
-          <h2 id="quick-nav-title">Navigation rapide</h2>
+          <h2 id="quick-nav-title">{activeTab === "favorites" ? "Favoris" : "Trajets récents"}</h2>
           {activeTab === "recents" && (
             <div className="button-row" style={{ flexDirection: "column", gap: "12px" }}>
               {recentRoutes.length === 0 ? (
@@ -852,10 +947,28 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
 
           {activeTab === "favorites" && (
             <div className="button-row" style={{ flexDirection: "column", gap: "12px" }}>
-              {favoriteRoutes.length === 0 ? (
+              {savedAddresses.length === 0 && favoriteRoutes.length === 0 ? (
                 <p className="status">Aucun favoris ajouté.</p>
               ) : (
-                favoriteRoutes.map((item) => (
+                <>
+                {savedAddresses.map((address) => (
+                  <div key={address.id} className="destination-card">
+                    <strong>{address.label}</strong>
+                    <span>Adresse favorite</span>
+                    <div className="button-row" style={{ marginTop: 10 }}>
+                      <button className="btn ghost" onClick={() => loadFavoriteAsDestination(address)} type="button">
+                        Destination
+                      </button>
+                      <button className="btn ghost" onClick={() => selectSavedDeparture(address.id)} type="button">
+                        Départ
+                      </button>
+                      <button className="btn ghost" onClick={() => removeSavedAddress(address.id)} type="button">
+                        Supprimer
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {favoriteRoutes.map((item) => (
                   <div key={item.id} className="destination-card">
                     <strong>{item.title}</strong>
                     <span>{formatDistance(item.distance)} · {formatDuration(item.duration)}</span>
@@ -868,16 +981,17 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
                       </button>
                     </div>
                   </div>
-                ))
+                ))}
+                </>
               )}
             </div>
           )}
 
-          {(activeTab === "mode" || activeTab === "departure" || activeTab === "destination") && (
-            <p className="status">Sélectionnez « Trajets récents » ou « Favoris » à gauche pour charger un trajet.</p>
-          )}
         </section>
 
+        )}
+
+        {activeTab === "reports" && (
         <section className="panel-section" aria-labelledby="report-title">
           <h2 id="report-title">Signalements</h2>
           <p className="status">
@@ -892,6 +1006,7 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
             </button>
           </div>
         </section>
+        )}
       </aside>
 
       <MapContainer

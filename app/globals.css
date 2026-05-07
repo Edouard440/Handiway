@@ -566,10 +566,25 @@ textarea:focus-visible {
 
   .ui-panel {
     top: 8px;
-    left: 8px;
-    width: calc(100vw - 16px);
+    left: 64px;
+    width: calc(100vw - 72px);
     max-height: 46dvh;
     padding: 13px;
+  }
+
+  .sidebar {
+    top: 8px;
+    left: 8px;
+    gap: 8px;
+  }
+
+  .sidebar-item:hover,
+  .sidebar-item.active {
+    width: 48px;
+  }
+
+  .sidebar-label {
+    display: none;
   }
 
   .search-row {
