@@ -12,7 +12,7 @@ export async function GET(req: Request) {
   const url = new URL("https://nominatim.openstreetmap.org/search");
   url.searchParams.set("q", q);
   url.searchParams.set("format", "jsonv2");
-  url.searchParams.set("limit", "1");
+  url.searchParams.set("limit", "5");
   url.searchParams.set("addressdetails", "1");
 
   const res = await fetch(url.toString(), {
@@ -36,13 +36,26 @@ export async function GET(req: Request) {
     return NextResponse.json({ found: false }, { status: 200 });
   }
 
-  const first = data[0];
+  const results = data
+    .map((item) => ({
+      lat: Number(item.lat),
+      lon: Number(item.lon),
+      display_name: item.display_name,
+    }))
+    .filter((item) => Number.isFinite(item.lat) && Number.isFinite(item.lon));
+
+  if (results.length === 0) {
+    return NextResponse.json({ found: false }, { status: 200 });
+  }
+
+  const first = results[0];
   return NextResponse.json(
     {
       found: true,
-      lat: Number(first.lat),
-      lon: Number(first.lon),
+      lat: first.lat,
+      lon: first.lon,
       display_name: first.display_name,
+      results,
     },
     { status: 200 }
   );

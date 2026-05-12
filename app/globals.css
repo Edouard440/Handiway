@@ -225,6 +225,221 @@ textarea:focus-visible {
   inset: 0;
 }
 
+.map-search-shell {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  z-index: 1100;
+  width: min(620px, calc(100vw - 28px));
+  transform: translateX(-50%);
+}
+
+.map-search-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(16px);
+}
+
+.map-search-form {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto auto;
+  align-items: center;
+  min-height: 54px;
+  padding: 6px;
+  gap: 4px;
+}
+
+.map-search-input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  padding: 10px 8px;
+  font-size: 1rem;
+}
+
+.map-search-input::placeholder {
+  color: #637086;
+}
+
+.icon-btn,
+.search-submit {
+  display: inline-grid;
+  place-items: center;
+  min-width: 38px;
+  min-height: 38px;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 900;
+}
+
+.icon-btn {
+  background: transparent;
+  color: var(--foreground);
+  font-size: 1.22rem;
+}
+
+.icon-btn:hover {
+  background: rgba(23, 32, 51, 0.07);
+}
+
+.search-submit {
+  background: var(--primary);
+  color: white;
+  padding: 0 12px;
+}
+
+.search-submit:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.search-dropdown {
+  display: grid;
+  gap: 2px;
+  max-height: min(46dvh, 360px);
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  padding: 8px;
+}
+
+.dropdown-title,
+.dropdown-empty,
+.search-error {
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.dropdown-title {
+  font-weight: 900;
+  color: var(--foreground);
+}
+
+.search-error {
+  color: var(--danger);
+  font-weight: 800;
+}
+
+.place-option {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+  padding: 10px;
+  text-align: left;
+}
+
+.place-option:hover {
+  background: rgba(15, 118, 110, 0.09);
+}
+
+.place-option span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.place-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(15, 118, 110, 0.12);
+  color: var(--primary-dark);
+  font-weight: 900;
+}
+
+.route-sheet {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  z-index: 1050;
+  display: grid;
+  gap: 12px;
+  width: min(460px, calc(100vw - 28px));
+  max-height: min(62dvh, 620px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--foreground);
+  padding: 14px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(16px);
+}
+
+.route-sheet-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.route-sheet-title {
+  display: -webkit-box;
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: 1.02rem;
+  font-weight: 900;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.route-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.route-config {
+  display: grid;
+  gap: 10px;
+}
+
+.field.compact {
+  margin-top: 0;
+}
+
+.saved-departures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.btn.selected {
+  border-color: rgba(15, 118, 110, 0.42);
+  background: rgba(15, 118, 110, 0.13);
+  color: var(--primary-dark);
+}
+
+.compact-summary {
+  margin-top: 0;
+}
+
+.ui-panel {
+  display: none !important;
+}
+
+.ui-panel.visible {
+  display: block !important;
+}
+
 .sidebar {
   position: fixed;
   top: 14px;
@@ -283,9 +498,9 @@ textarea:focus-visible {
 .ui-panel {
   position: fixed;
   top: 14px;
-  left: 228px;
+  left: 76px;
   z-index: 1000;
-  width: min(410px, calc(100vw - 242px));
+  width: min(390px, calc(100vw - 90px));
   max-height: calc(100dvh - 28px);
   overflow: auto;
   border: 1px solid var(--line);

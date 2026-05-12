@@ -28,6 +28,12 @@ type SavedAddress = {
   lng: number;
 };
 
+type SearchSuggestion = {
+  lat: number;
+  lng: number;
+  label: string;
+};
+
 type RouteRecord = {
   id: string;
   title: string;
@@ -69,6 +75,12 @@ type RouteState = {
   distance: number;
   duration: number;
   steps: RouteStep[];
+  adapted?: boolean;
+  avoidedObstacles?: number;
+  remainingObstacles?: number;
+  provider?: "openrouteservice" | "osrm-fallback";
+  providerProfile?: string;
+  providerReason?: string | null;
 };
 
 type DraftObstacle = {
@@ -224,6 +236,25 @@ function metersBetween([lat1, lon1]: [number, number], [lat2, lon2]: [number, nu
   return radius * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
+function distanceToSegmentMeters(point: [number, number], start: [number, number], end: [number, number]) {
+  const latScale = 111320;
+  const lngScale = 111320 * Math.max(Math.cos((point[0] * Math.PI) / 180), 0.2);
+  const px = point[1] * lngScale;
+  const py = point[0] * latScale;
+  const ax = start[1] * lngScale;
+  const ay = start[0] * latScale;
+  const bx = end[1] * lngScale;
+  const by = end[0] * latScale;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSquared = dx * dx + dy * dy;
+
+  if (lengthSquared === 0) return Math.hypot(px - ax, py - ay);
+
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSquared));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
 function formatDistance(meters: number) {
   if (meters < 1000) return `${Math.round(meters)} m`;
   return `${(meters / 1000).toFixed(1)} km`;
@@ -277,6 +308,9 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
   const [savedAddressId, setSavedAddressId] = useState<string | null>(null);
   const [favoriteRoutes, setFavoriteRoutes] = useState<RouteRecord[]>(() => loadFavoriteRoutes());
   const [recentRoutes, setRecentRoutes] = useState<RouteRecord[]>(() => loadRecentRoutes());
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [suggestions, setSuggestions] = useState<SearchSuggestion[]>([]);
+  const [suggestionStatus, setSuggestionStatus] = useState<"idle" | "loading" | "error">("idle");
 
   const center = position ?? DEFAULT_CENTER;
   const selectedAidLabel = selectedAid ? aidLabels[selectedAid] : "non défini";
@@ -284,10 +318,39 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
 
   const nearbyObstacles = useMemo(() => {
     if (!route) return [];
-    return obstacles.filter((obstacle) =>
-      route.coords.some((coord) => metersBetween(coord, [obstacle.lat, obstacle.lng]) < 45)
-    );
+    return obstacles.filter((obstacle) => {
+      const point: [number, number] = [obstacle.lat, obstacle.lng];
+
+      for (let index = 1; index < route.coords.length; index += 1) {
+        if (distanceToSegmentMeters(point, route.coords[index - 1], route.coords[index]) < 80) {
+          return true;
+        }
+      }
+
+      return route.coords.some((coord) => metersBetween(coord, point) < 80);
+    });
   }, [obstacles, route]);
+
+  const previousSearches = useMemo(() => {
+    const seen = new Set<string>();
+    return [
+      ...recentRoutes.map((record) => ({
+        lat: record.destination[0],
+        lng: record.destination[1],
+        label: record.destinationLabel,
+      })),
+      ...savedAddresses.map((address) => ({
+        lat: address.lat,
+        lng: address.lng,
+        label: address.label,
+      })),
+    ].filter((item) => {
+      const key = `${item.lat}:${item.lng}:${item.label}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, 5);
+  }, [recentRoutes, savedAddresses]);
 
   useEffect(() => {
     if (!navigator.geolocation) {
@@ -301,6 +364,56 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
       { enableHighAccuracy: true, timeout: 8000 }
     );
   }, []);
+
+  useEffect(() => {
+    const query = addressInput.trim();
+    if (query.length < 3 || destination?.label === query) {
+      setSuggestions([]);
+      setSuggestionStatus("idle");
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(async () => {
+      setSuggestionStatus("loading");
+
+      try {
+        const response = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`, {
+          signal: controller.signal,
+        });
+        const data = (await response.json()) as {
+          results?: { lat?: number; lon?: number; display_name?: string }[];
+        };
+
+        if (!response.ok || !Array.isArray(data.results)) {
+          setSuggestions([]);
+          setSuggestionStatus("error");
+          return;
+        }
+
+        setSuggestions(
+          data.results
+            .filter((item) => typeof item.lat === "number" && typeof item.lon === "number")
+            .map((item) => ({
+              lat: item.lat as number,
+              lng: item.lon as number,
+              label: item.display_name ?? query,
+            }))
+        );
+        setSuggestionStatus("idle");
+      } catch {
+        if (!controller.signal.aborted) {
+          setSuggestions([]);
+          setSuggestionStatus("error");
+        }
+      }
+    }, 280);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeout);
+    };
+  }, [addressInput, destination?.label]);
 
   useEffect(() => {
     if (!navigationActive || !navigator.geolocation) return;
@@ -428,7 +541,7 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
     mapRef.current?.setView([address.lat, address.lng], 14, { animate: true });
   }
 
-  function useCurrentDeparture() {
+  function applyCurrentDeparture() {
     if (!position) {
       setDepartureStatus("error");
       return;
@@ -554,12 +667,6 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
     saveFavoriteRoutes(next);
   }
 
-  function removeFavoriteRoute(id: string) {
-    const next = favoriteRoutes.filter((item) => item.id !== id);
-    setFavoriteRoutes(next);
-    saveFavoriteRoutes(next);
-  }
-
   function addRecentRoute(routeData: RouteState) {
     if (!destination) return;
 
@@ -578,6 +685,23 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
     const next = [record, ...recentRoutes].slice(0, 6);
     setRecentRoutes(next);
     saveRecentRoutes(next);
+  }
+
+  function selectDestinationLocation(location: SearchSuggestion) {
+    setDestination({
+      lat: location.lat,
+      lng: location.lng,
+      label: location.label,
+    });
+    setAddressInput(location.label);
+    setSuggestions([]);
+    setSearchFocused(false);
+    setRoute(null);
+    setRouteError(null);
+    setCurrentStepIndex(0);
+    setNavigationActive(false);
+    setGeoStatus("idle");
+    mapRef.current?.setView([location.lat, location.lng], 16, { animate: true });
   }
 
   async function confirmAddress() {
@@ -601,16 +725,11 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
         return;
       }
 
-      setDestination({
+      selectDestinationLocation({
         lat: data.lat,
         lng: data.lon,
         label: data.display_name ?? query,
       });
-      setRoute(null);
-      setCurrentStepIndex(0);
-      setNavigationActive(false);
-      setGeoStatus("idle");
-      mapRef.current?.setView([data.lat, data.lon], 16, { animate: true });
     } catch {
       setGeoStatus("error");
     }
@@ -633,6 +752,12 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
       toLng: String(destination.lng),
       profile: profileForAid(selectedAid),
     });
+    if (obstacles.length > 0) {
+      params.set(
+        "avoid",
+        obstacles.map((obstacle) => `${obstacle.lat},${obstacle.lng}`).join("|")
+      );
+    }
 
     try {
       const response = await fetch(`/api/route?${params.toString()}`);
@@ -660,6 +785,7 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
   function clearDestination() {
     setDestination(null);
     setAddressInput("");
+    setSuggestions([]);
     setGeoStatus("idle");
     setRoute(null);
     setRouteError(null);
@@ -669,58 +795,316 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
 
   return (
     <main className="map-wrap">
+      <div className="map-search-shell">
+        <div className="map-search-card">
+          <form
+            className="map-search-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              confirmAddress();
+            }}
+          >
+            <button
+              aria-label="Changer le mode de déplacement"
+              className="icon-btn"
+              onClick={onBackToSelection}
+              type="button"
+            >
+              ≡
+            </button>
+            <input
+              aria-label="Rechercher une destination"
+              className="map-search-input"
+              onChange={(event) => {
+                setAddressInput(event.target.value);
+                setGeoStatus("idle");
+                setSearchFocused(true);
+              }}
+              onFocus={() => setSearchFocused(true)}
+              placeholder="Rechercher une adresse ou un lieu"
+              value={addressInput}
+            />
+            {addressInput && (
+              <button
+                aria-label="Effacer la recherche"
+                className="icon-btn"
+                onClick={clearDestination}
+                type="button"
+              >
+                ×
+              </button>
+            )}
+            <button
+              aria-label="Lancer la recherche"
+              className="search-submit"
+              disabled={!addressInput.trim() || geoStatus === "loading"}
+              type="submit"
+            >
+              {geoStatus === "loading" ? "..." : "OK"}
+            </button>
+          </form>
+
+          {searchFocused && !destination && (
+            <div className="search-dropdown">
+              {addressInput.trim().length < 3 ? (
+                <>
+                  <p className="dropdown-title">Recherches précédentes</p>
+                  {previousSearches.length === 0 ? (
+                    <p className="dropdown-empty">Aucune recherche récente.</p>
+                  ) : (
+                    previousSearches.map((item) => (
+                      <button
+                        className="place-option"
+                        key={`${item.lat}-${item.lng}-${item.label}`}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => selectDestinationLocation(item)}
+                        type="button"
+                      >
+                        <span className="place-icon" aria-hidden="true">↺</span>
+                        <span>{item.label}</span>
+                      </button>
+                    ))
+                  )}
+                </>
+              ) : (
+                <>
+                  <p className="dropdown-title">
+                    {suggestionStatus === "loading" ? "Recherche..." : "Suggestions"}
+                  </p>
+                  {suggestions.length === 0 && suggestionStatus !== "loading" ? (
+                    <p className="dropdown-empty">
+                      {suggestionStatus === "error" ? "Suggestions indisponibles." : "Aucune suggestion."}
+                    </p>
+                  ) : (
+                    suggestions.map((item) => (
+                      <button
+                        className="place-option"
+                        key={`${item.lat}-${item.lng}-${item.label}`}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => selectDestinationLocation(item)}
+                        type="button"
+                      >
+                        <span className="place-icon" aria-hidden="true">⌕</span>
+                        <span>{item.label}</span>
+                      </button>
+                    ))
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {geoStatus === "notfound" && <p className="search-error">Adresse introuvable.</p>}
+          {geoStatus === "error" && <p className="search-error">Erreur pendant la recherche.</p>}
+        </div>
+      </div>
+
+      {destination && (
+        <section className="route-sheet" aria-label="Configuration de l'itinéraire">
+          <div className="route-sheet-header">
+            <div>
+              <p className="panel-kicker">Destination</p>
+              <h1 className="route-sheet-title">{destination.label}</h1>
+            </div>
+            <button className="btn ghost" onClick={clearDestination} type="button">
+              Effacer
+            </button>
+          </div>
+
+          <div className="route-actions">
+            <button
+              className="btn ghost"
+              onClick={() => mapRef.current?.setView([destination.lat, destination.lng], 16)}
+              type="button"
+            >
+              Voir
+            </button>
+            <button className="btn ghost" onClick={addDestinationToFavorites} type="button">
+              Favori
+            </button>
+            <button className="btn ghost" onClick={recenterToMyPosition} type="button">
+              Ma position
+            </button>
+          </div>
+
+          <div className="route-config">
+            <label className="field compact">
+              <span>Lieu de départ</span>
+              <select
+                value={departureMode}
+                onChange={(event) => {
+                  const value = event.target.value as "current" | "address" | "saved";
+                  setDepartureMode(value);
+                  setDepartureStatus("idle");
+                  if (value === "current") applyCurrentDeparture();
+                }}
+              >
+                <option value="current">Lieu actuel</option>
+                <option value="address">Adresse</option>
+                <option value="saved">Favoris</option>
+              </select>
+            </label>
+
+            {departureMode === "address" && (
+              <div className="search-row">
+                <input
+                  aria-label="Adresse de départ"
+                  className="text-input"
+                  onChange={(event) => {
+                    setDepartureAddressInput(event.target.value);
+                    setDepartureStatus("idle");
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") confirmDepartureAddress();
+                  }}
+                  placeholder="Adresse de départ"
+                  value={departureAddressInput}
+                />
+                <button
+                  className="btn"
+                  disabled={!departureAddressInput.trim() || departureStatus === "loading"}
+                  onClick={confirmDepartureAddress}
+                  type="button"
+                >
+                  {departureStatus === "loading" ? "..." : "OK"}
+                </button>
+              </div>
+            )}
+
+            {departureMode === "saved" && (
+              <div className="saved-departures">
+                {savedAddresses.length === 0 ? (
+                  <p className="status">Aucun favori ajouté.</p>
+                ) : (
+                  savedAddresses.map((address) => (
+                    <button
+                      key={address.id}
+                      className={`btn ghost ${savedAddressId === address.id ? "selected" : ""}`}
+                      onClick={() => selectSavedDeparture(address.id)}
+                      type="button"
+                    >
+                      {address.label}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+
+            {departureMode === "address" && departureLocation && (
+              <button
+                className="btn ghost"
+                onClick={saveDepartureAddress}
+                disabled={!departureAddressInput.trim()}
+                type="button"
+              >
+                Ajouter le départ aux favoris
+              </button>
+            )}
+
+            {(departureStatus === "notfound" || departureStatus === "error") && (
+              <p className="status error">
+                {departureStatus === "notfound"
+                  ? "Adresse de départ introuvable."
+                  : "Erreur pendant la recherche du départ."}
+              </p>
+            )}
+
+            <p className="status">
+              Départ : <strong>{departureLocation?.label ?? "Position actuelle"}</strong>
+            </p>
+          </div>
+
+          <div className="route-actions">
+            <button className="btn" disabled={routeStatus === "loading"} onClick={fetchRoute} type="button">
+              {routeStatus === "loading" ? "Calcul..." : "Itinéraire"}
+            </button>
+            <button
+              className={`btn ghost ${reportMode ? "selected" : ""}`}
+              onClick={() => setReportMode((value) => !value)}
+              type="button"
+            >
+              {reportMode ? "Annuler signalement" : "Signaler"}
+            </button>
+          </div>
+
+          {routeError && <p className="status error">{routeError}</p>}
+
+          {route && (
+            <div className="route-summary compact-summary">
+              <strong>
+                {formatDistance(route.distance)} · {formatDuration(route.duration)}
+              </strong>
+              <span>
+                Moteur : {route.provider === "openrouteservice" ? "OpenRouteService" : "OSRM fallback"}
+                {route.providerProfile ? ` (${route.providerProfile})` : ""}
+              </span>
+              {route.provider === "osrm-fallback" && route.providerReason && (
+                <span>ORS non utilisé : {route.providerReason}</span>
+              )}
+              {route.adapted && (
+                <span>
+                  Trajet adapté : {route.avoidedObstacles ?? 0} obstacle(s) évité(s)
+                  {(route.remainingObstacles ?? 0) > 0 ? `, ${route.remainingObstacles} encore proche(s).` : "."}
+                </span>
+              )}
+              {!route.adapted && (route.remainingObstacles ?? 0) > 0 && (
+                <span>Aucun détour fiable trouvé avec le moteur actuel pour éviter tous les signalements.</span>
+              )}
+              {nearbyObstacles.length > 0 && (
+                <span>{nearbyObstacles.length} obstacle(s) signalé(s) près du trajet.</span>
+              )}
+              {nextStep && <span>Prochaine étape : {nextStep.instruction}</span>}
+              <div className="route-actions">
+                <button
+                  className="btn ghost"
+                  onClick={() => setNavigationActive((active) => !active)}
+                  type="button"
+                >
+                  {navigationActive ? "Arrêter navigation" : "Démarrer navigation"}
+                </button>
+                <button className="btn ghost" onClick={addCurrentRouteToFavorites} type="button">
+                  Sauver trajet
+                </button>
+              </div>
+            </div>
+          )}
+
+          {reportMode && (
+            <p className="status">Cliquez sur la carte pour placer un obstacle.</p>
+          )}
+        </section>
+      )}
+
       <nav className="sidebar" aria-label="Navigation rapide">
         <button
           type="button"
-          className={`sidebar-item ${activeTab === "mode" ? "active" : ""}`}
-          onClick={() => setActiveTab("mode")}
-        >
-          <span className="sidebar-icon" aria-hidden="true">≡</span>
-          <span className="sidebar-label">Changer le mode</span>
-        </button>
-        <button
-          type="button"
-          className={`sidebar-item ${activeTab === "destination" ? "active" : ""}`}
-          onClick={() => setActiveTab("destination")}
-        >
-          <span className="sidebar-icon" aria-hidden="true">→</span>
-          <span className="sidebar-label">Destination</span>
-        </button>
-        <button
-          type="button"
-          className={`sidebar-item ${activeTab === "departure" ? "active" : ""}`}
-          onClick={() => setActiveTab("departure")}
-        >
-          <span className="sidebar-icon" aria-hidden="true">📍</span>
-          <span className="sidebar-label">Lieu de départ</span>
-        </button>
-        <button
-          type="button"
-          className={`sidebar-item ${activeTab === "recents" ? "active" : ""}`}
-          onClick={() => setActiveTab("recents")}
-        >
-          <span className="sidebar-icon" aria-hidden="true">🕒</span>
-          <span className="sidebar-label">Trajets récents</span>
-        </button>
-        <button
-          type="button"
           className={`sidebar-item ${activeTab === "favorites" ? "active" : ""}`}
-          onClick={() => setActiveTab("favorites")}
+          onClick={() => setActiveTab((tab) => (tab === "favorites" ? "destination" : "favorites"))}
         >
           <span className="sidebar-icon" aria-hidden="true">★</span>
-          <span className="sidebar-label">Favoris</span>
+          <span className="sidebar-label">Adresses favorites</span>
         </button>
         <button
           type="button"
           className={`sidebar-item ${activeTab === "reports" ? "active" : ""}`}
-          onClick={() => setActiveTab("reports")}
+          onClick={() => {
+            if (activeTab === "reports") {
+              setActiveTab("destination");
+              setReportMode(false);
+              return;
+            }
+            setActiveTab("reports");
+          }}
         >
           <span className="sidebar-icon" aria-hidden="true">!</span>
           <span className="sidebar-label">Signalements</span>
         </button>
       </nav>
 
-      <aside className="ui-panel" aria-label="Commandes HandiWay">
+      <aside
+        className={`ui-panel ${activeTab === "favorites" || activeTab === "reports" ? "visible" : ""}`}
+        aria-label="Commandes HandiWay"
+      >
         <div className="panel-heading">
           <div>
             <p className="panel-kicker">HandiWay</p>
@@ -765,7 +1149,7 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
 
           {departureMode === "current" && (
             <div className="button-row" style={{ marginTop: 10 }}>
-              <button className="btn" onClick={useCurrentDeparture} type="button">
+              <button className="btn" onClick={applyCurrentDeparture} type="button">
                 Utiliser mon lieu actuel
               </button>
             </div>
@@ -947,11 +1331,10 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
 
           {activeTab === "favorites" && (
             <div className="button-row" style={{ flexDirection: "column", gap: "12px" }}>
-              {savedAddresses.length === 0 && favoriteRoutes.length === 0 ? (
-                <p className="status">Aucun favoris ajouté.</p>
+              {savedAddresses.length === 0 ? (
+                <p className="status">Aucune adresse favorite ajoutée.</p>
               ) : (
-                <>
-                {savedAddresses.map((address) => (
+                savedAddresses.map((address) => (
                   <div key={address.id} className="destination-card">
                     <strong>{address.label}</strong>
                     <span>Adresse favorite</span>
@@ -967,22 +1350,7 @@ export default function MapComponent({ selectedAid, onBackToSelection }: MapComp
                       </button>
                     </div>
                   </div>
-                ))}
-                {favoriteRoutes.map((item) => (
-                  <div key={item.id} className="destination-card">
-                    <strong>{item.title}</strong>
-                    <span>{formatDistance(item.distance)} · {formatDuration(item.duration)}</span>
-                    <div className="button-row" style={{ marginTop: 10 }}>
-                      <button className="btn ghost" onClick={() => loadRouteRecord(item)} type="button">
-                        Charger
-                      </button>
-                      <button className="btn ghost" onClick={() => removeFavoriteRoute(item.id)} type="button">
-                        Supprimer
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                </>
+                ))
               )}
             </div>
           )}
